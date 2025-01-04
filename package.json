@@ -19,7 +19,8 @@
         "SoundsCapacitorSocialShare.podspec"
     ],
     "scripts": {
-        "build": "rollup -c"
+        "build": "rollup -c",
+        "prepare": "npm run build"
     },
     "dependencies": {
         "@capacitor/core": "^6.0.0"

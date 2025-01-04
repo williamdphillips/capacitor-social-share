@@ -130,8 +130,41 @@ public class SocialShare: CAPPlugin {
             "com.instagram.sharedSticker.backgroundVideo": try! Data(contentsOf: videoURL)
         ]
 
-        if let stickerImage = stickerImage {
-            pasteboardItems["com.instagram.sharedSticker.stickerImage"] = stickerImage.pngData()
+        if let stickerImageInput = call.getString("stickerImage") {
+            var stickerImage: UIImage? = nil
+
+            // Check if the input is Base64
+            if stickerImageInput.starts(with: "data:image") || isBase64Encoded(stickerImageInput) {
+                // Remove Base64 prefix if it exists
+                let cleanBase64String = stickerImageInput.replacingOccurrences(of: "data:image/png;base64,", with: "")
+                                                        .replacingOccurrences(of: "data:image/jpeg;base64,", with: "")
+                
+                // Decode Base64 and convert to UIImage
+                if let imageData = Data(base64Encoded: cleanBase64String), let decodedImage = UIImage(data: imageData) {
+                    stickerImage = decodedImage
+                } else {
+                    call.reject("Invalid Base64 string for sticker image")
+                    return
+                }
+            } else {
+                // Treat input as a file path
+                if let imageURL = URL(string: stickerImageInput),
+                FileManager.default.fileExists(atPath: imageURL.path) {
+                    stickerImage = UIImage(contentsOfFile: imageURL.path)
+                } else {
+                    call.reject("Invalid file path for sticker image")
+                    return
+                }
+            }
+
+            // Add stickerImage to the pasteboard
+            if let image = stickerImage {
+                pasteboardItems["com.instagram.sharedSticker.stickerImage"] = image.pngData()
+            } else {
+                call.reject("Failed to process sticker image")
+            }
+        } else {
+            call.reject("No sticker image provided")
         }
 
         if let contentURL = contentURL {

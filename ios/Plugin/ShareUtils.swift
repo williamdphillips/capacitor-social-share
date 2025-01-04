@@ -282,3 +282,9 @@ func convertAudioToM4A(audioURL: URL, completion: @escaping (URL?) -> Void) {
         }
     }
 }
+
+func isBase64Encoded(_ string: String) -> Bool {
+    let base64Regex = "^([A-Za-z0-9+/=]{4})*([A-Za-z0-9+/=]{2}==|[A-Za-z0-9+/=]{3}=)?$"
+    let base64Predicate = NSPredicate(format: "SELF MATCHES %@", base64Regex)
+    return base64Predicate.evaluate(with: string)
+}

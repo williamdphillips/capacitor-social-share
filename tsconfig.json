@@ -1,0 +1,28 @@
+{
+    "compilerOptions": {
+        "baseUrl": ".", // Required for path mappings
+        "paths": {
+            "@capacitor/core": [
+                "node_modules/@capacitor/core/dist/esm/core.d.ts"
+            ],
+            "@sounds/capacitor-social-share": [
+                "node_modules/@sounds/capacitor-social-share"
+            ]
+        },
+        "target": "ES6",
+        "module": "ESNext",
+        "declaration": true,
+        "outDir": "dist",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "moduleResolution": "node"
+    },
+    "include": [
+        "src/**/*"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist"
+    ]
+}

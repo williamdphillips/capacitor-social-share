@@ -9,11 +9,13 @@ export enum SharePlatform {
 
 export interface InstagramShareOptions {
     platform: SharePlatform.INSTAGRAM_STORIES | SharePlatform.INSTAGRAM_POST;
-    imagePath: string; // Required: File URI for the image
+    imagePath?: string; // Optional: Full-screen image to use as a background (if provided, overrides backgroundColor)
+    audioPath?: string; // Optional: File URI for an audio track (used for stories with audio)
     contentURL?: string; // Optional: Link to add to the story
-    stickerImage?: string; // Optional: File URI for a sticker
-    backgroundColorTop?: string; // Optional: Top background gradient color
-    backgroundColorBottom?: string; // Optional: Bottom background gradient color
+    linkURL?: string // Optional: Link to add to the story with a clickable button
+    stickerImage?: string; // Optional: File URI for a sticker (includes song image or custom sticker)
+    backgroundColor?: string; // Optional: Background color for the story/video
+    startTime?: number; // Optional: Start time in seconds for the audio (defaults to 0)
 }
 
 export interface FacebookShareOptions {
@@ -40,6 +42,7 @@ export interface WhatsAppShareOptions {
     platform: SharePlatform.WHATSAPP;
     text: string; // Required: Message to send
     imagePath?: string; // Optional: File URI for an image
+    url?: string;
 }
 
 export type ShareOptions =

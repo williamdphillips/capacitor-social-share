@@ -1,0 +1,16 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    compileSdkVersion 33
+    defaultConfig {
+        minSdkVersion 21
+        targetSdkVersion 33
+    }
+}
+
+dependencies {
+    implementation "com.getcapacitor:capacitor-android:5.0.0"
+}

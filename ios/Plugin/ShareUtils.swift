@@ -24,9 +24,11 @@ extension UIColor {
     }
 }
 
-func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Double, backgroundColor: String?, backgroundImage: UIImage?, completion: @escaping (Bool, URL?) -> Void) {
+func createVideoFromImageAndAudio(
+    audioURL: URL, outputURL: URL, startTime: Double, duration: Double?, backgroundColor: String?,
+    backgroundImage: UIImage?, completion: @escaping (Bool, URL?) -> Void
+) {
     let size = CGSize(width: 1080, height: 1920)
-    let maxDuration = CMTime(seconds: 15, preferredTimescale: 600)
 
     print("Starting video creation process with provided background...")
 
@@ -58,7 +60,11 @@ func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Doub
                 return
             }
             print("Audio converted successfully. Proceeding with video creation.")
-            createVideoFromImageAndAudio(audioURL: convertedAudioURL, outputURL: outputURL, startTime: startTime, backgroundColor: backgroundColor, backgroundImage: backgroundImage, completion: completion)
+            createVideoFromImageAndAudio(
+                audioURL: convertedAudioURL, outputURL: outputURL, startTime: startTime,
+                duration: duration, backgroundColor: backgroundColor,
+                backgroundImage: backgroundImage,
+                completion: completion)
         }
         return
     }
@@ -74,17 +80,39 @@ func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Doub
     let composition = AVMutableComposition()
 
     // Add the audio track
-    guard let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+    guard
+        let audioTrack = composition.addMutableTrack(
+            withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+    else {
         print("Error: Unable to add audio track to composition.")
         completion(false, nil)
         return
     }
 
     let audioStartTime = CMTime(seconds: startTime, preferredTimescale: 600)
-    let audioDuration = min(CMTime(seconds: 15, preferredTimescale: 600), audioAsset.duration - audioStartTime)
+
+    // Calculate duration: use provided duration, or remaining audio duration, or default to full audio
+    let requestedDuration: CMTime
+    if let customDuration = duration, customDuration > 0 {
+        requestedDuration = CMTime(seconds: customDuration, preferredTimescale: 600)
+        print("Using custom duration: \(customDuration) seconds")
+    } else {
+        requestedDuration = audioAsset.duration - audioStartTime
+        print(
+            "Using remaining audio duration: \((audioAsset.duration - audioStartTime).seconds) seconds"
+        )
+    }
+
+    // Ensure we don't exceed available audio
+    let availableAudioDuration = audioAsset.duration - audioStartTime
+    let audioDuration = min(requestedDuration, availableAudioDuration)
+
+    print("Final video duration: \(audioDuration.seconds) seconds")
 
     do {
-        try audioTrack.insertTimeRange(CMTimeRange(start: audioStartTime, duration: audioDuration), of: audioTrackSource, at: .zero)
+        try audioTrack.insertTimeRange(
+            CMTimeRange(start: audioStartTime, duration: audioDuration), of: audioTrackSource,
+            at: .zero)
         print("Audio track inserted successfully with duration: \(audioDuration.seconds) seconds")
     } catch {
         print("Error inserting audio track: \(error.localizedDescription)")
@@ -93,8 +121,10 @@ func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Doub
     }
 
     // Generate a video from the background image
-    let videoURL = outputURL.deletingLastPathComponent().appendingPathComponent("temp_video_\(Date().timeIntervalSince1970).mp4")
-    generateVideoFromImage(image: finalBackground, duration: audioDuration, outputURL: videoURL) { success, videoPath in
+    let videoURL = outputURL.deletingLastPathComponent().appendingPathComponent(
+        "temp_video_\(Date().timeIntervalSince1970).mp4")
+    generateVideoFromImage(image: finalBackground, duration: audioDuration, outputURL: videoURL) {
+        success, videoPath in
         guard success, let videoPath = videoPath else {
             print("Error generating video from background.")
             completion(false, nil)
@@ -108,14 +138,18 @@ func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Doub
             return
         }
 
-        guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+        guard
+            let videoTrack = composition.addMutableTrack(
+                withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+        else {
             print("Error: Unable to add video track to composition.")
             completion(false, nil)
             return
         }
 
         do {
-            try videoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: audioDuration), of: videoTrackSource, at: .zero)
+            try videoTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: audioDuration), of: videoTrackSource, at: .zero)
             print("Video track inserted successfully.")
         } catch {
             print("Error inserting video track: \(error.localizedDescription)")
@@ -147,8 +181,11 @@ func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Doub
             }
         }
 
-        // Prepare export session
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+        // Prepare high-quality export session
+        guard
+            let exportSession = AVAssetExportSession(
+                asset: composition, presetName: AVAssetExportPresetHighestQuality)
+        else {
             print("Error: Unable to create export session.")
             completion(false, nil)
             return
@@ -156,6 +193,12 @@ func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Doub
         exportSession.outputURL = outputURL
         exportSession.outputFileType = .mp4
         exportSession.videoComposition = videoComposition
+
+        // Additional quality settings for export
+        exportSession.shouldOptimizeForNetworkUse = false  // Prioritize quality over file size
+        if #available(iOS 11.0, *) {
+            exportSession.canPerformMultiplePassesOverSourceMediaData = true  // Enable multi-pass encoding for better quality
+        }
 
         print("Export session configured. Output URL: \(outputURL)")
 
@@ -180,8 +223,21 @@ func createVideoFromImageAndAudio(audioURL: URL, outputURL: URL, startTime: Doub
     }
 }
 
-func generateVideoFromImage(image: UIImage, duration: CMTime, outputURL: URL, completion: @escaping (Bool, URL?) -> Void) {
+func generateVideoFromImage(
+    image: UIImage, duration: CMTime, outputURL: URL, completion: @escaping (Bool, URL?) -> Void
+) {
     let size = CGSize(width: 1080, height: 1920)
+    let frameRate: Int32 = 30
+    let frameDuration = CMTime(value: 1, timescale: frameRate)
+
+    // Remove existing file if it exists
+    if FileManager.default.fileExists(atPath: outputURL.path) {
+        do {
+            try FileManager.default.removeItem(atPath: outputURL.path)
+        } catch {
+            print("Error removing existing file: \(error.localizedDescription)")
+        }
+    }
 
     guard let writer = try? AVAssetWriter(outputURL: outputURL, fileType: .mp4) else {
         print("Error: Unable to create AVAssetWriter.")
@@ -189,18 +245,33 @@ func generateVideoFromImage(image: UIImage, duration: CMTime, outputURL: URL, co
         return
     }
 
+    // High-quality Instagram-optimized video settings
     let videoSettings: [String: Any] = [
         AVVideoCodecKey: AVVideoCodecType.h264,
         AVVideoWidthKey: size.width,
-        AVVideoHeightKey: size.height
+        AVVideoHeightKey: size.height,
+        AVVideoCompressionPropertiesKey: [
+            AVVideoAverageBitRateKey: 8_000_000,  // 8 Mbps for high quality (Instagram supports up to 10 Mbps)
+            AVVideoMaxKeyFrameIntervalKey: 30,
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+            AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
+            AVVideoQualityKey: 0.9,  // High quality setting (0.0 to 1.0)
+            AVVideoExpectedSourceFrameRateKey: 30,
+            AVVideoAverageNonDroppableFrameRateKey: 30,
+        ],
     ]
+
     let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+    writerInput.expectsMediaDataInRealTime = false
+
     let adaptor = AVAssetWriterInputPixelBufferAdaptor(
         assetWriterInput: writerInput,
         sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,  // Better compatibility
             kCVPixelBufferWidthKey as String: size.width,
-            kCVPixelBufferHeightKey as String: size.height
+            kCVPixelBufferHeightKey as String: size.height,
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
         ]
     )
 
@@ -214,34 +285,120 @@ func generateVideoFromImage(image: UIImage, duration: CMTime, outputURL: URL, co
     writer.startWriting()
     writer.startSession(atSourceTime: .zero)
 
-    let buffer = pixelBufferFromImage(image: image, size: size)
-    adaptor.append(buffer, withPresentationTime: .zero)
+    // Create multiple frames for the duration to make a proper video
+    let totalFrames = Int(duration.seconds * Double(frameRate))
+    print("Creating video with \(totalFrames) frames for \(duration.seconds) seconds")
 
-    writerInput.markAsFinished()
-    writer.finishWriting {
-        print("Video generation completed.")
-        completion(true, outputURL)
+    let queue = DispatchQueue(label: "videoWriterQueue")
+    queue.async {
+        var frameCount = 0
+
+        while frameCount < totalFrames {
+            let presentationTime = CMTime(value: Int64(frameCount), timescale: frameRate)
+
+            while !writerInput.isReadyForMoreMediaData {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+
+            guard let buffer = pixelBufferFromImage(image: image, size: size) else {
+                print("Error creating pixel buffer for frame \(frameCount)")
+                break
+            }
+
+            if !adaptor.append(buffer, withPresentationTime: presentationTime) {
+                print("Error appending pixel buffer for frame \(frameCount)")
+                break
+            }
+
+            frameCount += 1
+        }
+
+        writerInput.markAsFinished()
+        writer.finishWriting {
+            DispatchQueue.main.async {
+                if writer.status == .completed {
+                    print("Video generation completed successfully with \(frameCount) frames.")
+                    completion(true, outputURL)
+                } else {
+                    print("Video generation failed with status: \(writer.status.rawValue)")
+                    if let error = writer.error {
+                        print("Writer error: \(error.localizedDescription)")
+                    }
+                    completion(false, nil)
+                }
+            }
+        }
     }
 }
 
-func pixelBufferFromImage(image: UIImage, size: CGSize) -> CVPixelBuffer {
+func pixelBufferFromImage(image: UIImage, size: CGSize) -> CVPixelBuffer? {
     var pixelBuffer: CVPixelBuffer?
     let attributes: [String: Any] = [
         kCVPixelBufferCGImageCompatibilityKey as String: true,
         kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
         kCVPixelBufferWidthKey as String: size.width,
-        kCVPixelBufferHeightKey as String: size.height
+        kCVPixelBufferHeightKey as String: size.height,
     ]
-    CVPixelBufferCreate(kCFAllocatorDefault, Int(size.width), Int(size.height), kCVPixelFormatType_32ARGB, attributes as CFDictionary, &pixelBuffer)
 
-    let context = CIContext()
-    context.render(CIImage(image: image)!, to: pixelBuffer!)
+    let result = CVPixelBufferCreate(
+        kCFAllocatorDefault, Int(size.width), Int(size.height), kCVPixelFormatType_32BGRA,
+        attributes as CFDictionary, &pixelBuffer)
 
-    return pixelBuffer!
+    guard result == kCVReturnSuccess, let buffer = pixelBuffer else {
+        print("Error creating pixel buffer")
+        return nil
+    }
+
+    CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags(rawValue: 0))
+
+    // Use sRGB color space for better color accuracy
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+        CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags(rawValue: 0))
+        print("Error creating sRGB color space")
+        return nil
+    }
+
+    let context = CGContext(
+        data: CVPixelBufferGetBaseAddress(buffer),
+        width: Int(size.width),
+        height: Int(size.height),
+        bitsPerComponent: 8,
+        bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue
+    )
+
+    guard let cgContext = context else {
+        CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags(rawValue: 0))
+        print("Error creating CG context")
+        return nil
+    }
+
+    // Set high quality rendering
+    cgContext.setAllowsAntialiasing(true)
+    cgContext.setShouldAntialias(true)
+    cgContext.interpolationQuality = .high
+
+    // Scale and draw the image to fit the video size
+    let imageRect = CGRect(origin: .zero, size: size)
+    cgContext.clear(imageRect)
+
+    if let cgImage = image.cgImage {
+        // Ensure proper aspect ratio scaling
+        let imageSize = CGSize(width: cgImage.width, height: cgImage.height)
+        let aspectFitRect = AVMakeRect(aspectRatio: imageSize, insideRect: imageRect)
+        cgContext.draw(cgImage, in: aspectFitRect)
+    }
+
+    CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags(rawValue: 0))
+
+    return buffer
 }
 
 func convertAudioToM4A(audioURL: URL, completion: @escaping (URL?) -> Void) {
-    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("converted-audio.m4a")
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "converted-audio.m4a")
 
     // Remove existing file if necessary
     if FileManager.default.fileExists(atPath: outputURL.path) {
@@ -256,7 +413,10 @@ func convertAudioToM4A(audioURL: URL, completion: @escaping (URL?) -> Void) {
     }
 
     let asset = AVAsset(url: audioURL)
-    guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+    guard
+        let exportSession = AVAssetExportSession(
+            asset: asset, presetName: AVAssetExportPresetAppleM4A)
+    else {
         print("Error creating export session for audio conversion.")
         completion(nil)
         return

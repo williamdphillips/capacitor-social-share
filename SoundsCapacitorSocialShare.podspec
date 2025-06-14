@@ -14,4 +14,5 @@ Pod::Spec.new do |spec|
     spec.source_files = 'ios/Plugin/**/*.{swift,h,m,c,cc,cpp}'
     spec.platform     = :ios, '11.0'
     spec.dependency 'Capacitor', '>= 6.0.0'
+    spec.framework = 'Photos', 'AVFoundation', 'Foundation', 'UIKit'
   end

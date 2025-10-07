@@ -26,7 +26,7 @@ extension UIColor {
 
 func createVideoFromImageAndAudio(
     audioURL: URL, outputURL: URL, startTime: Double, duration: Double?, backgroundColor: String?,
-    backgroundImage: UIImage?, completion: @escaping (Bool, URL?) -> Void
+    backgroundImage: UIImage?, textOverlays: [[String: Any]]? = nil, imageOverlays: [[String: Any]]? = nil, completion: @escaping (Bool, URL?) -> Void
 ) {
     let size = CGSize(width: 1080, height: 1920)
 
@@ -64,6 +64,8 @@ func createVideoFromImageAndAudio(
                 audioURL: convertedAudioURL, outputURL: outputURL, startTime: startTime,
                 duration: duration, backgroundColor: backgroundColor,
                 backgroundImage: backgroundImage,
+                textOverlays: textOverlays,
+                imageOverlays: imageOverlays,
                 completion: completion)
         }
         return
@@ -168,6 +170,46 @@ func createVideoFromImageAndAudio(
         let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
         instruction.layerInstructions = [layerInstruction]
         videoComposition.instructions = [instruction]
+        
+        // Add overlays if provided
+        if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) {
+            print("📱 [Overlays] Adding \(textOverlays?.count ?? 0) text overlays and \(imageOverlays?.count ?? 0) image overlays")
+            
+            // Create parent layer for the video
+            let parentLayer = CALayer()
+            parentLayer.frame = CGRect(origin: .zero, size: size)
+            
+            // Create video layer
+            let videoLayer = CALayer()
+            videoLayer.frame = CGRect(origin: .zero, size: size)
+            parentLayer.addSublayer(videoLayer)
+            
+            // Add image overlays
+            if let imageOverlays = imageOverlays {
+                for (index, overlay) in imageOverlays.enumerated() {
+                    if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: size) {
+                        parentLayer.addSublayer(imageLayer)
+                        print("📱 [Overlays] Added image overlay \(index + 1)")
+                    }
+                }
+            }
+            
+            // Add text overlays
+            if let textOverlays = textOverlays {
+                for (index, overlay) in textOverlays.enumerated() {
+                    if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: size) {
+                        parentLayer.addSublayer(textLayer)
+                        print("📱 [Overlays] Added text overlay \(index + 1)")
+                    }
+                }
+            }
+            
+            // Apply animation tool
+            videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
+                postProcessingAsVideoLayer: videoLayer,
+                in: parentLayer
+            )
+        }
 
         // Remove existing file if necessary
         if FileManager.default.fileExists(atPath: outputURL.path) {
@@ -447,4 +489,302 @@ func isBase64Encoded(_ string: String) -> Bool {
     let base64Regex = "^([A-Za-z0-9+/=]{4})*([A-Za-z0-9+/=]{2}==|[A-Za-z0-9+/=]{3}=)?$"
     let base64Predicate = NSPredicate(format: "SELF MATCHES %@", base64Regex)
     return base64Predicate.evaluate(with: string)
+}
+
+// Helper function to create text overlay layer
+func createTextOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CATextLayer? {
+    guard let text = overlay["text"] as? String,
+          let xPercent = overlay["x"] as? Double,
+          let yPercent = overlay["y"] as? Double,
+          let fontSize = overlay["fontSize"] as? Double else {
+        print("❌ [Overlays] Invalid text overlay data")
+        return nil
+    }
+    
+    let textLayer = CATextLayer()
+    textLayer.string = text
+    textLayer.fontSize = CGFloat(fontSize)
+    
+    // Parse color (default to white)
+    if let colorString = overlay["color"] as? String {
+        textLayer.foregroundColor = parseColor(colorString)?.cgColor ?? UIColor.white.cgColor
+    } else {
+        textLayer.foregroundColor = UIColor.white.cgColor
+    }
+    
+    // Set font
+    if let fontFamily = overlay["fontFamily"] as? String, fontFamily != "System" {
+        textLayer.font = CTFontCreateWithName(fontFamily as CFString, CGFloat(fontSize), nil)
+    } else {
+        textLayer.font = UIFont.systemFont(ofSize: CGFloat(fontSize)).fontName as CFTypeRef
+    }
+    
+    // Calculate position (percentages to pixels)
+    let x = (xPercent / 100.0) * Double(videoSize.width)
+    let y = (yPercent / 100.0) * Double(videoSize.height)
+    
+    // Calculate text size
+    let textSize = (text as NSString).size(withAttributes: [
+        .font: UIFont.systemFont(ofSize: CGFloat(fontSize))
+    ])
+    
+    textLayer.frame = CGRect(x: x, y: y, width: textSize.width + 20, height: textSize.height + 10)
+    textLayer.alignmentMode = .left
+    textLayer.contentsScale = UIScreen.main.scale
+    
+    print("📱 [Overlays] Text layer created: \"\(text)\" at (\(x), \(y))")
+    return textLayer
+}
+
+// Helper function to create image overlay layer
+func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CALayer? {
+    guard let xPercent = overlay["x"] as? Double,
+          let yPercent = overlay["y"] as? Double,
+          let widthPercent = overlay["width"] as? Double,
+          let heightPercent = overlay["height"] as? Double else {
+        print("❌ [Overlays] Invalid image overlay data")
+        return nil
+    }
+    
+    var image: UIImage?
+    
+    // Try to load image from path or base64
+    if let imagePath = overlay["imagePath"] as? String {
+        let url = URL(fileURLWithPath: imagePath)
+        image = UIImage(contentsOfFile: url.path)
+    } else if let imageData = overlay["imageData"] as? String {
+        if let data = Data(base64Encoded: imageData) {
+            image = UIImage(data: data)
+        }
+    }
+    
+    guard let finalImage = image else {
+        print("❌ [Overlays] Failed to load image")
+        return nil
+    }
+    
+    // Calculate position and size (percentages to pixels)
+    let x = (xPercent / 100.0) * Double(videoSize.width)
+    let y = (yPercent / 100.0) * Double(videoSize.height)
+    let width = (widthPercent / 100.0) * Double(videoSize.width)
+    let height = (heightPercent / 100.0) * Double(videoSize.height)
+    
+    let imageLayer = CALayer()
+    imageLayer.frame = CGRect(x: x, y: y, width: width, height: height)
+    imageLayer.contents = finalImage.cgImage
+    imageLayer.contentsGravity = .resizeAspectFill
+    
+    print("📱 [Overlays] Image layer created at (\(x), \(y)) with size (\(width), \(height))")
+    return imageLayer
+}
+
+// Helper function to parse color string (hex or rgba)
+func parseColor(_ colorString: String) -> UIColor? {
+    // Try hex format first
+    if colorString.hasPrefix("#") {
+        return UIColor(hex: colorString)
+    }
+    
+    // Try rgba format
+    if colorString.hasPrefix("rgba") {
+        let components = colorString
+            .replacingOccurrences(of: "rgba(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+            .split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        
+        if components.count == 4 {
+            return UIColor(
+                red: CGFloat(components[0]) / 255.0,
+                green: CGFloat(components[1]) / 255.0,
+                blue: CGFloat(components[2]) / 255.0,
+                alpha: CGFloat(components[3])
+            )
+        }
+    }
+    
+    // Try rgb format
+    if colorString.hasPrefix("rgb") {
+        let components = colorString
+            .replacingOccurrences(of: "rgb(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+            .split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        
+        if components.count == 3 {
+            return UIColor(
+                red: CGFloat(components[0]) / 255.0,
+                green: CGFloat(components[1]) / 255.0,
+                blue: CGFloat(components[2]) / 255.0,
+                alpha: 1.0
+            )
+        }
+    }
+    
+    return nil
+}
+
+// Apply overlays to an existing video
+func applyOverlaysToVideo(
+    videoURL: URL,
+    outputURL: URL,
+    textOverlays: [[String: Any]]?,
+    imageOverlays: [[String: Any]]?,
+    completion: @escaping (Bool, URL?) -> Void
+) {
+    print("📱 [Overlays] Starting overlay application to video")
+    
+    let videoAsset = AVURLAsset(url: videoURL)
+    guard let videoTrack = videoAsset.tracks(withMediaType: .video).first else {
+        print("❌ [Overlays] No video track found")
+        completion(false, nil)
+        return
+    }
+    
+    let composition = AVMutableComposition()
+    let videoDuration = videoAsset.duration
+    
+    // Add video track
+    guard let compositionVideoTrack = composition.addMutableTrack(
+        withMediaType: .video,
+        preferredTrackID: kCMPersistentTrackID_Invalid
+    ) else {
+        print("❌ [Overlays] Failed to add video track to composition")
+        completion(false, nil)
+        return
+    }
+    
+    do {
+        try compositionVideoTrack.insertTimeRange(
+            CMTimeRange(start: .zero, duration: videoDuration),
+            of: videoTrack,
+            at: .zero
+        )
+    } catch {
+        print("❌ [Overlays] Failed to insert video track: \(error)")
+        completion(false, nil)
+        return
+    }
+    
+    // Add audio track if present
+    if let audioTrack = videoAsset.tracks(withMediaType: .audio).first {
+        if let compositionAudioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) {
+            do {
+                try compositionAudioTrack.insertTimeRange(
+                    CMTimeRange(start: .zero, duration: videoDuration),
+                    of: audioTrack,
+                    at: .zero
+                )
+                print("📱 [Overlays] Audio track added successfully")
+            } catch {
+                print("⚠️ [Overlays] Failed to insert audio track: \(error)")
+            }
+        }
+    }
+    
+    // Create video composition with overlays
+    let videoComposition = AVMutableVideoComposition()
+    videoComposition.renderSize = videoTrack.naturalSize
+    videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+    
+    let instruction = AVMutableVideoCompositionInstruction()
+    instruction.timeRange = CMTimeRange(start: .zero, duration: videoDuration)
+    
+    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+    instruction.layerInstructions = [layerInstruction]
+    videoComposition.instructions = [instruction]
+    
+    // Add overlays if provided
+    if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) {
+        print("📱 [Overlays] Creating overlay layers")
+        
+        // Create parent layer for the video
+        let parentLayer = CALayer()
+        parentLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        
+        // Create video layer
+        let videoLayer = CALayer()
+        videoLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        parentLayer.addSublayer(videoLayer)
+        
+        // Add image overlays
+        if let imageOverlays = imageOverlays {
+            for (index, overlay) in imageOverlays.enumerated() {
+                if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                    parentLayer.addSublayer(imageLayer)
+                    print("📱 [Overlays] Added image overlay \(index + 1)")
+                }
+            }
+        }
+        
+        // Add text overlays
+        if let textOverlays = textOverlays {
+            for (index, overlay) in textOverlays.enumerated() {
+                if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                    parentLayer.addSublayer(textLayer)
+                    print("📱 [Overlays] Added text overlay \(index + 1)")
+                }
+            }
+        }
+        
+        // Apply animation tool
+        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
+            postProcessingAsVideoLayer: videoLayer,
+            in: parentLayer
+        )
+    }
+    
+    // Remove existing file if necessary
+    if FileManager.default.fileExists(atPath: outputURL.path) {
+        do {
+            try FileManager.default.removeItem(atPath: outputURL.path)
+            print("📱 [Overlays] Removed existing file at output path")
+        } catch {
+            print("❌ [Overlays] Failed to remove existing file: \(error)")
+            completion(false, nil)
+            return
+        }
+    }
+    
+    // Export video with overlays
+    guard let exportSession = AVAssetExportSession(
+        asset: composition,
+        presetName: AVAssetExportPresetHighestQuality
+    ) else {
+        print("❌ [Overlays] Failed to create export session")
+        completion(false, nil)
+        return
+    }
+    
+    exportSession.outputURL = outputURL
+    exportSession.outputFileType = .mp4
+    exportSession.videoComposition = videoComposition
+    exportSession.shouldOptimizeForNetworkUse = false
+    
+    if #available(iOS 11.0, *) {
+        exportSession.canPerformMultiplePassesOverSourceMediaData = true
+    }
+    
+    print("📱 [Overlays] Starting export...")
+    exportSession.exportAsynchronously {
+        switch exportSession.status {
+        case .completed:
+            print("✅ [Overlays] Export completed successfully")
+            completion(true, outputURL)
+        case .failed:
+            if let error = exportSession.error {
+                print("❌ [Overlays] Export failed: \(error.localizedDescription)")
+            }
+            completion(false, nil)
+        case .cancelled:
+            print("⚠️ [Overlays] Export cancelled")
+            completion(false, nil)
+        default:
+            print("❌ [Overlays] Export status: \(exportSession.status.rawValue)")
+            completion(false, nil)
+        }
+    }
 }

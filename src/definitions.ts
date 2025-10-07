@@ -24,11 +24,31 @@ export interface NativeShareOptions {
     files?: string[]; // Optional: Array of file paths to share (iOS/Android only)
 }
 
+export interface TextOverlay {
+    text: string;
+    x: number; // X position as percentage (0-100)
+    y: number; // Y position as percentage (0-100)
+    fontSize: number; // Font size in points
+    color?: string; // Text color (hex or rgba), defaults to white
+    fontFamily?: string; // Font family name, defaults to system font
+}
+
+export interface ImageOverlay {
+    imagePath?: string; // Image file path
+    imageData?: string; // Image as base64 string (alternative to imagePath)
+    x: number; // X position as percentage (0-100)
+    y: number; // Y position as percentage (0-100)
+    width: number; // Width as percentage (0-100)
+    height: number; // Height as percentage (0-100)
+}
+
 export interface InstagramShareOptions {
     platform: SharePlatform.INSTAGRAM_STORIES | SharePlatform.INSTAGRAM;
     text?: string; // Optional: Caption text for the post
     imagePath?: string; // Optional: Background image file path
     imageData?: string; // Optional: Background image as base64 string (alternative to imagePath)
+    videoPath?: string; // Optional: Video file path (for direct video sharing or canvas-recorded videos)
+    videoData?: string; // Optional: Video as base64 string (alternative to videoPath)
     audioPath?: string; // Optional: Audio file path - if provided with imagePath/imageData, creates a video
     audioData?: string; // Optional: Audio as base64 string (alternative to audioPath)
     contentURL?: string; // Optional: Link to add to the story
@@ -39,6 +59,8 @@ export interface InstagramShareOptions {
     startTime?: number; // Optional: Start time in seconds for the audio (defaults to 0)
     duration?: number; // Optional: Duration in seconds for the video (if not specified, uses remaining audio duration)
     saveToDevice?: boolean; // Optional: Save created content to device before sharing (default: false)
+    textOverlays?: TextOverlay[]; // Optional: Array of text overlays to add to the video/image
+    imageOverlays?: ImageOverlay[]; // Optional: Array of image overlays to add to the video/image
 }
 
 export interface FacebookShareOptions {

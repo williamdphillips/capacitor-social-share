@@ -516,6 +516,14 @@ public class SocialShare: CAPPlugin {
         print("   - imageURL: \(imageURL?.path ?? "nil")")
         print("   - videoURL: \(videoURL?.path ?? "nil")")
         print("   - audioURL: \(audioURL?.path ?? "nil")")
+        
+        // Check file existence
+        if let videoURL = videoURL {
+            print("📱 [SocialShare] Video file exists: \(FileManager.default.fileExists(atPath: videoURL.path))")
+        }
+        if let audioURL = audioURL {
+            print("📱 [SocialShare] Audio file exists: \(FileManager.default.fileExists(atPath: audioURL.path))")
+        }
 
         // Priority 1: If video is provided with audio (with or without overlays), replace audio and optionally apply overlays
         if let videoURL = videoURL,
@@ -523,6 +531,7 @@ public class SocialShare: CAPPlugin {
             FileManager.default.fileExists(atPath: videoURL.path),
             FileManager.default.fileExists(atPath: audioURL.path)
         {
+            print("🎯 [SocialShare] PRIORITY 1: Video + Audio + Overlays path selected")
             let hasOverlays = (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty)
             print("📱 [SocialShare] Video + audio detected - will replace audio" + (hasOverlays ? " and apply overlays" : ""))
             
@@ -559,6 +568,8 @@ public class SocialShare: CAPPlugin {
             FileManager.default.fileExists(atPath: videoURL.path),
             ((textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty))
         {
+            print("🎯 [SocialShare] PRIORITY 2: Video + Overlays (NO audio replacement) path selected")
+            print("⚠️ [SocialShare] WARNING: Original video audio will be preserved!")
             print("📱 [SocialShare] Applying overlays to video background")
             
             let documentsPath = FileManager.default.urls(

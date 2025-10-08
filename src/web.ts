@@ -251,6 +251,134 @@ export class SocialShareWeb extends WebPlugin implements SocialSharePlugin {
         return null;
     }
 
+    // Generate video from image + audio on web
+    private async generateVideoFromImageAndAudio(
+        imagePath: string | undefined,
+        imageData: string | undefined,
+        audioPath: string | undefined,
+        audioData: string | undefined,
+        options: InstagramShareOptions
+    ): Promise<File> {
+        console.log('🎥 Starting video generation from image + audio');
+
+        // Load image
+        const imageFile = await this.getFileForSharing(imagePath, imageData, 'image.png', 'image/png');
+        if (!imageFile) throw new Error('Failed to load image');
+
+        // Load audio
+        const audioFile = await this.getFileForSharing(audioPath, audioData, 'audio.mp3', 'audio/mpeg');
+        if (!audioFile) throw new Error('Failed to load audio');
+
+        // Get duration from options or default to 15 seconds
+        const duration = (options.duration || 15) * 1000; // Convert to ms
+        const startTime = (options.startTime || 0) * 1000; // Convert to ms
+
+        console.log(`🎥 Video settings: duration=${duration}ms, startTime=${startTime}ms`);
+
+        // Create canvas for video frames
+        const canvas = document.createElement('canvas');
+        canvas.width = 1080;
+        canvas.height = 1920;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Failed to get canvas context');
+
+        // Load and draw image to canvas
+        const img = new Image();
+        const imageUrl = URL.createObjectURL(imageFile);
+        await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = reject;
+            img.src = imageUrl;
+        });
+
+        // Draw image to canvas
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(imageUrl);
+
+        console.log('🎥 Image loaded and drawn to canvas');
+
+        // Load audio
+        const audio = new Audio();
+        const audioUrl = URL.createObjectURL(audioFile);
+        audio.src = audioUrl;
+        audio.currentTime = startTime / 1000; // Set start time
+
+        await new Promise((resolve, reject) => {
+            audio.onloadeddata = resolve;
+            audio.onerror = reject;
+        });
+
+        console.log('🎥 Audio loaded');
+
+        // Create a MediaStream from canvas
+        const canvasStream = canvas.captureStream(30); // 30 fps
+
+        // Create audio context to capture audio stream
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaElementSource(audio);
+        const destination = audioContext.createMediaStreamDestination();
+        source.connect(destination);
+        source.connect(audioContext.destination); // Also connect to speakers for monitoring
+
+        // Combine video and audio streams
+        const videoTrack = canvasStream.getVideoTracks()[0];
+        const audioTrack = destination.stream.getAudioTracks()[0];
+        const combinedStream = new MediaStream([videoTrack, audioTrack]);
+
+        console.log('🎥 Streams combined, starting recording');
+
+        // Record the combined stream
+        const mediaRecorder = new MediaRecorder(combinedStream, {
+            mimeType: 'video/webm;codecs=vp8,opus',
+            videoBitsPerSecond: 2500000 // 2.5 Mbps
+        });
+
+        const chunks: Blob[] = [];
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+                chunks.push(e.data);
+            }
+        };
+
+        // Start recording and play audio
+        return new Promise((resolve, reject) => {
+            mediaRecorder.onstart = () => {
+                console.log('🎥 Recording started');
+                audio.play().catch(reject);
+            };
+
+            mediaRecorder.onstop = async () => {
+                console.log('🎥 Recording stopped, processing video');
+                URL.revokeObjectURL(audioUrl);
+                audioContext.close();
+
+                // Create video blob
+                const videoBlob = new Blob(chunks, { type: 'video/webm' });
+                
+                // Convert to File
+                const videoFile = new File([videoBlob], 'story.webm', { type: 'video/webm' });
+                console.log(`🎥 Video generated: ${videoFile.size} bytes`);
+                resolve(videoFile);
+            };
+
+            mediaRecorder.onerror = (e) => {
+                console.error('🎥 Recording error:', e);
+                URL.revokeObjectURL(audioUrl);
+                audioContext.close();
+                reject(new Error('MediaRecorder error'));
+            };
+
+            mediaRecorder.start();
+
+            // Stop recording after duration
+            setTimeout(() => {
+                console.log('🎥 Stopping recording after duration');
+                audio.pause();
+                mediaRecorder.stop();
+            }, duration);
+        });
+    }
+
     // Helper function to share with native Web Share API
     private async tryNativeShare(title: string, text: string, url: string, file?: File): Promise<boolean> {
         if (!navigator.share) return false;
@@ -272,10 +400,13 @@ export class SocialShareWeb extends WebPlugin implements SocialSharePlugin {
     }
 
     private async handleInstagramSharing(options: InstagramShareOptions): Promise<void> {
-        const { imagePath, imageData, videoPath, videoData, contentURL, text } = options;
+        const { imagePath, imageData, videoPath, videoData, audioPath, audioData, contentURL, text, startTime, duration } = options;
 
         // Check if we have a video (either path or data)
         const hasVideo = !!(videoPath || videoData);
+
+        // Check if we have audio (to create video from image + audio)
+        const hasAudio = !!(audioPath || audioData);
 
         // Get the appropriate file for sharing
         let mediaFile: File | null = null;
@@ -283,10 +414,27 @@ export class SocialShareWeb extends WebPlugin implements SocialSharePlugin {
 
         if (hasVideo) {
             // Handle video
-            mediaFile = await this.getFileForSharing(videoPath, videoData, 'video.webm', 'video/webm');
+            mediaFile = await this.getFileForSharing(videoPath, videoData, 'video.mp4', 'video/mp4');
             mediaType = 'video';
+        } else if (hasAudio && (imagePath || imageData)) {
+            // Generate video from image + audio using canvas + MediaRecorder
+            console.log('🎥 Generating video from image + audio on web...');
+            try {
+                mediaFile = await this.generateVideoFromImageAndAudio(
+                    imagePath,
+                    imageData,
+                    audioPath,
+                    audioData,
+                    options as InstagramShareOptions
+                );
+                mediaType = 'video';
+            } catch (error) {
+                console.error('Failed to generate video, falling back to image:', error);
+                mediaFile = await this.getFileForSharing(imagePath, imageData, 'story.png', 'image/png');
+                mediaType = 'image';
+            }
         } else {
-            // Handle image
+            // Handle image only
             mediaFile = await this.getFileForSharing(imagePath, imageData, 'image.jpg', 'image/jpeg');
             mediaType = 'image';
         }
@@ -332,15 +480,21 @@ export class SocialShareWeb extends WebPlugin implements SocialSharePlugin {
 
             // Show guidance message
             const fileType = hasVideo ? 'Video' : 'Image';
-            alert(`${fileType} downloaded!${clipboardMessage}
+            let message = `${fileType} downloaded!${clipboardMessage}\n\n`;
 
-To share on Instagram:
+            if (hasAudio && !hasVideo) {
+                message += `Note: Web browsers cannot generate videos from images + audio.\nFor full video with audio, please use the mobile app.\n\n`;
+            }
+
+            message += `To share on Instagram:
 1. Open Instagram app or web
 2. Create a new ${options.platform === SharePlatform.INSTAGRAM_STORIES ? 'Story' : 'Post'}
 3. Upload the downloaded ${mediaType}
 4. Paste the caption from your clipboard
 
-Opening Instagram web...`);
+Opening Instagram web...`;
+
+            alert(message);
         } else {
             // No media file available
             alert(`Instagram sharing options:

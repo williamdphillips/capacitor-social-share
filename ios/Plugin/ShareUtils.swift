@@ -836,7 +836,7 @@ func replaceVideoAudioAndApplyOverlays(
     print("📱 [Audio+Overlays] Audio duration: \(CMTimeGetSeconds(audioDuration))s")
     print("📱 [Audio+Overlays] Final duration: \(CMTimeGetSeconds(finalDuration))s")
     
-    // Add video track
+    // Add ONLY the video track (no audio from original video)
     guard let compositionVideoTrack = composition.addMutableTrack(
         withMediaType: .video,
         preferredTrackID: kCMPersistentTrackID_Invalid
@@ -852,7 +852,7 @@ func replaceVideoAudioAndApplyOverlays(
             of: videoTrack,
             at: .zero
         )
-        print("✅ [Audio+Overlays] Video track added successfully")
+        print("✅ [Audio+Overlays] Video track added successfully (original audio excluded)")
     } catch {
         print("❌ [Audio+Overlays] Failed to insert video track: \(error)")
         completion(false, nil)

@@ -516,16 +516,33 @@ public class SocialShare: CAPPlugin {
         print("   - imageURL: \(imageURL?.path ?? "nil")")
         print("   - videoURL: \(videoURL?.path ?? "nil")")
         print("   - audioURL: \(audioURL?.path ?? "nil")")
+        print("   - audioPath input: \(audioPath ?? "nil")")
+        print("   - audioURL absoluteString: \(audioURL?.absoluteString ?? "nil")")
         
         // Check file existence
         if let videoURL = videoURL {
-            print("📱 [SocialShare] Video file exists: \(FileManager.default.fileExists(atPath: videoURL.path))")
+            let videoExists = FileManager.default.fileExists(atPath: videoURL.path)
+            print("📱 [SocialShare] Video file exists: \(videoExists)")
+        } else {
+            print("📱 [SocialShare] Video URL is nil")
         }
         if let audioURL = audioURL {
-            print("📱 [SocialShare] Audio file exists: \(FileManager.default.fileExists(atPath: audioURL.path))")
+            let audioExists = FileManager.default.fileExists(atPath: audioURL.path)
+            print("📱 [SocialShare] Audio file exists: \(audioExists) at path: \(audioURL.path)")
+            if !audioExists {
+                print("⚠️ [SocialShare] WARNING: Audio file does NOT exist at path!")
+            }
+        } else {
+            print("📱 [SocialShare] Audio URL is nil - no audio will be added")
         }
 
         // Priority 1: If video is provided with audio (with or without overlays), replace audio and optionally apply overlays
+        print("🔍 [SocialShare] Checking Priority 1 conditions:")
+        print("   - videoURL exists: \(videoURL != nil)")
+        print("   - audioURL exists: \(audioURL != nil)")
+        print("   - video file exists: \(videoURL != nil ? FileManager.default.fileExists(atPath: videoURL!.path) : false)")
+        print("   - audio file exists: \(audioURL != nil ? FileManager.default.fileExists(atPath: audioURL!.path) : false)")
+        
         if let videoURL = videoURL,
             let audioURL = audioURL,
             FileManager.default.fileExists(atPath: videoURL.path),

@@ -819,16 +819,23 @@ func replaceVideoAudioAndApplyOverlays(
     let audioDuration = audioAsset.duration
     let audioRemainingDuration = CMTimeSubtract(audioDuration, audioStartTime)
     
+    print("🎵 [Audio+Overlays] Audio clip parameters:")
+    print("   - Start time: \(startTime)s")
+    print("   - Requested duration: \(duration ?? 0)s")
+    print("   - Audio start time (CMTime): \(CMTimeGetSeconds(audioStartTime))s")
+    
     // Use the shorter of: video duration, specified duration, or remaining audio duration
     var finalDuration = videoDuration
     if let specifiedDuration = duration {
         let specifiedCMTime = CMTime(seconds: specifiedDuration, preferredTimescale: 600)
         finalDuration = CMTimeMinimum(finalDuration, specifiedCMTime)
+        print("   - Using specified duration: \(specifiedDuration)s")
     }
     finalDuration = CMTimeMinimum(finalDuration, audioRemainingDuration)
     
     print("📱 [Audio+Overlays] Video duration: \(CMTimeGetSeconds(videoDuration))s")
     print("📱 [Audio+Overlays] Audio duration: \(CMTimeGetSeconds(audioDuration))s")
+    print("📱 [Audio+Overlays] Audio remaining from start: \(CMTimeGetSeconds(audioRemainingDuration))s")
     print("📱 [Audio+Overlays] Final duration: \(CMTimeGetSeconds(finalDuration))s")
     
     // Verify original video has audio tracks (for logging)

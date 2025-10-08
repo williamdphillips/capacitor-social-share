@@ -560,7 +560,7 @@ public class SocialShare: CAPPlugin {
             }
         }
         // Priority 3: If both image and audio are provided, create a video
-        if let imageURL = imageURL,
+        else if let imageURL = imageURL,
             let audioURL = audioURL,
             FileManager.default.fileExists(atPath: imageURL.path),
             FileManager.default.fileExists(atPath: audioURL.path)

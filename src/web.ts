@@ -272,45 +272,77 @@ export class SocialShareWeb extends WebPlugin implements SocialSharePlugin {
     }
 
     private async handleInstagramSharing(options: InstagramShareOptions): Promise<void> {
-        const { imagePath, imageData, contentURL } = options;
-        // Note: audioPath and audioData are available in options but currently only used for guidance messaging
+        const { imagePath, imageData, videoPath, videoData, contentURL, text } = options;
 
-        // Try to get image file for potential Web Share API usage
-        const imageFile = await this.getFileForSharing(imagePath, imageData, 'image.jpg', 'image/jpeg');
+        // Check if we have a video (either path or data)
+        const hasVideo = !!(videoPath || videoData);
+
+        // Get the appropriate file for sharing
+        let mediaFile: File | null = null;
+        let mediaType = '';
+
+        if (hasVideo) {
+            // Handle video
+            mediaFile = await this.getFileForSharing(videoPath, videoData, 'video.webm', 'video/webm');
+            mediaType = 'video';
+        } else {
+            // Handle image
+            mediaFile = await this.getFileForSharing(imagePath, imageData, 'image.jpg', 'image/jpeg');
+            mediaType = 'image';
+        }
 
         // Create helpful content for clipboard
         let clipboardContent = '';
-        if (contentURL) {
-            clipboardContent += contentURL;
-        }
+        if (text) clipboardContent += text + '\n';
+        if (contentURL) clipboardContent += contentURL;
 
         // Copy content to clipboard if available
         let clipboardMessage = '';
         if (clipboardContent) {
             try {
                 await navigator.clipboard.writeText(clipboardContent);
-                clipboardMessage = '\n\nContent copied to clipboard for easy pasting!';
+                clipboardMessage = '\n\nCaption and link copied to clipboard!';
             } catch (error) {
                 // Clipboard access failed
             }
         }
 
-        // Try native share first if we have an image
-        if (imageFile) {
-            const shared = await this.tryNativeShare('', '', contentURL || '', imageFile);
+        // Try native share first if we have media
+        if (mediaFile) {
+            const shared = await this.tryNativeShare(
+                'Share to Instagram',
+                text || '',
+                contentURL || '',
+                mediaFile
+            );
             if (shared) return;
         }
 
-        // Provide guidance based on platform type
-        if (options.platform === SharePlatform.INSTAGRAM_STORIES) {
-            alert(`Instagram Stories sharing is best done through the mobile app where you can:
-            
-• Upload images and videos directly
-• Add stickers and interactive elements
-• Create videos from images and audio${clipboardMessage}
+        // If native share didn't work, download the file for manual upload
+        if (mediaFile) {
+            // Create download link
+            const url = URL.createObjectURL(mediaFile);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = mediaFile.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            // Show guidance message
+            const fileType = hasVideo ? 'Video' : 'Image';
+            alert(`${fileType} downloaded!${clipboardMessage}
+
+To share on Instagram:
+1. Open Instagram app or web
+2. Create a new ${options.platform === SharePlatform.INSTAGRAM_STORIES ? 'Story' : 'Post'}
+3. Upload the downloaded ${mediaType}
+4. Paste the caption from your clipboard
 
 Opening Instagram web...`);
         } else {
+            // No media file available
             alert(`Instagram sharing options:
             
 • Stories: Best on mobile app
@@ -380,10 +412,11 @@ Opening Instagram web...`);
     private async handleTikTokSharing(options: TikTokShareOptions): Promise<void> {
         const { text, hashtags, imagePath, imageData, videoPath, videoData } = options;
 
-        // Try to get media file
-        const imageFile = await this.getFileForSharing(imagePath, imageData, 'image.jpg', 'image/jpeg');
-        const videoFile = await this.getFileForSharing(videoPath, videoData, 'video.mp4', 'video/mp4');
+        // Try to get media file (prefer video for TikTok)
+        const videoFile = await this.getFileForSharing(videoPath, videoData, 'tiktok_video.mp4', 'video/mp4');
+        const imageFile = await this.getFileForSharing(imagePath, imageData, 'tiktok_image.jpg', 'image/jpeg');
         const mediaFile = videoFile || imageFile;
+        const mediaType = videoFile ? 'video' : 'image';
 
         let caption = text || '';
         if (hashtags?.length) {
@@ -392,28 +425,59 @@ Opening Instagram web...`);
 
         // Try native share with media if available
         if (mediaFile) {
-            const shared = await this.tryNativeShare('', caption, '', mediaFile);
+            const shared = await this.tryNativeShare('Share to TikTok', caption, '', mediaFile);
             if (shared) return;
         }
 
-        // TikTok doesn't have direct web sharing, provide guidance
-        let message = 'TikTok sharing is best done through the mobile app. ';
-        if (caption) {
-            message += `Caption: "${caption}"`;
-        }
+        // If native share didn't work, download the file for manual upload
+        if (mediaFile) {
+            // Create download link
+            const url = URL.createObjectURL(mediaFile);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = mediaFile.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
 
-        // Copy content to clipboard for easy pasting
-        if (caption) {
-            try {
-                await navigator.clipboard.writeText(caption);
-                message += '\n\nCaption copied to clipboard!';
-            } catch (error) {
-                // Clipboard access failed
+            // Copy caption to clipboard
+            let clipboardMessage = '';
+            if (caption) {
+                try {
+                    await navigator.clipboard.writeText(caption);
+                    clipboardMessage = '\n\nCaption copied to clipboard!';
+                } catch (error) {
+                    // Clipboard access failed
+                }
             }
+
+            // Show guidance message
+            const fileType = videoFile ? 'Video' : 'Image';
+            alert(`${fileType} downloaded!${clipboardMessage}
+
+To share on TikTok:
+1. Open TikTok app or web
+2. Click the + button to create
+3. Upload the downloaded ${mediaType}
+4. Paste the caption from your clipboard
+
+Opening TikTok upload page...`);
+        } else {
+            // No media file available
+            let message = 'TikTok sharing is best done through the mobile app.';
+            if (caption) {
+                try {
+                    await navigator.clipboard.writeText(caption);
+                    message += '\n\nCaption copied to clipboard!';
+                } catch (error) {
+                    // Clipboard access failed
+                }
+            }
+            alert(message);
         }
 
-        alert(message);
-        // Open TikTok web for user to upload manually
+        // Open TikTok web upload page
         window.open('https://www.tiktok.com/upload', '_blank');
     }
 

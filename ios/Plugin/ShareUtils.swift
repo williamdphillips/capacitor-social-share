@@ -572,9 +572,11 @@ func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CALay
     let imageLayer = CALayer()
     imageLayer.frame = CGRect(x: x, y: y, width: width, height: height)
     imageLayer.contents = finalImage.cgImage
-    imageLayer.contentsGravity = .resizeAspectFill
+    // Use .resize for full-screen overlays (100% width/height) to stretch exactly
+    // Use .resizeAspect for partial overlays to maintain aspect ratio
+    imageLayer.contentsGravity = (widthPercent >= 99 && heightPercent >= 99) ? .resize : .resizeAspect
     
-    print("📱 [Overlays] Image layer created at (\(x), \(y)) with size (\(width), \(height))")
+    print("📱 [Overlays] Image layer created at (\(x), \(y)) with size (\(width)x\(height)) - gravity: \(imageLayer.contentsGravity)")
     return imageLayer
 }
 

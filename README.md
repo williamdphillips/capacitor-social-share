@@ -123,6 +123,15 @@ await SocialShare.share({
   saveToDevice: true
 });
 
+// Instagram Stories with pre-recorded video (e.g., from canvas recording)
+await SocialShare.share({
+  platform: SharePlatform.INSTAGRAM_STORIES,
+  videoPath: '/path/to/recorded-video.webm',
+  text: 'Check out my story!',
+  contentURL: 'https://yourapp.com',
+  saveToDevice: true
+});
+
 // Share to Instagram with native picker (opens Story/Reels/Messages/Feed options)
 await SocialShare.share({
   platform: SharePlatform.INSTAGRAM,
@@ -409,6 +418,8 @@ interface InstagramShareOptions {
     text?: string; // Optional: Caption text for the post
     imagePath?: string; // Optional: Background image file path
     imageData?: string; // Optional: Background image as base64 string (alternative to imagePath)
+    videoPath?: string; // Optional: Video file path (for direct video sharing or canvas-recorded videos)
+    videoData?: string; // Optional: Video as base64 string (alternative to videoPath)
     audioPath?: string; // Optional: Audio file path - if provided with imagePath/imageData, creates a video
     audioData?: string; // Optional: Audio as base64 string (alternative to audioPath)
     contentURL?: string; // Optional: Link to add to the story
@@ -417,6 +428,7 @@ interface InstagramShareOptions {
     stickerImageData?: string; // Optional: Sticker image as base64 string (alternative to stickerImage)
     backgroundColor?: string; // Optional: Background color (used if no imagePath/imageData provided)
     startTime?: number; // Optional: Start time in seconds for the audio (defaults to 0)
+    duration?: number; // Optional: Duration in seconds for the video
     saveToDevice?: boolean; // Optional: Save created content to device before sharing (default: false)
 }
 ```
@@ -521,7 +533,7 @@ interface RedditShareOptions {
 | **Instagram** |
 | Stories | ✅ | ✅ | ⚠️* |
 | Posts | ✅ | ✅ | ✅ |
-| Video Creation | ✅ | ❌ | ❌ |
+| Video Creation | ✅ | ❌ | ✅** |
 | Native Picker | ✅ | ✅ | ❌ |
 | **Facebook** |
 | Posts | ✅ | ✅ | ✅ |
@@ -531,8 +543,8 @@ interface RedditShareOptions {
 | Images | ✅ | ✅ | ❌ |
 | Hashtags | ✅ | ✅ | ✅ |
 | **TikTok** |
-| Videos | ✅ | ✅ | ⚠️* |
-| Images | ✅ | ✅ | ⚠️* |
+| Videos | ✅ | ✅ | ✅** |
+| Images | ✅ | ✅ | ✅** |
 | **WhatsApp** |
 | Messages | ✅ | ✅ | ✅ |
 | Images | ✅ | ✅ | ❌ |
@@ -549,6 +561,7 @@ interface RedditShareOptions {
 | Posts | ✅ | ✅ | ✅ |
 
 *⚠️ Web provides guidance and clipboard support. Instagram Stories require mobile app for full features.
+**✅ Web supports video/image downloads with automatic clipboard copy for manual upload to Instagram and TikTok.
 
 ## How It Works
 

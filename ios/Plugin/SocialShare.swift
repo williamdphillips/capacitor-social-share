@@ -517,14 +517,14 @@ public class SocialShare: CAPPlugin {
         print("   - videoURL: \(videoURL?.path ?? "nil")")
         print("   - audioURL: \(audioURL?.path ?? "nil")")
 
-        // Priority 1: If video is provided with audio and overlays, replace audio and apply overlays
+        // Priority 1: If video is provided with audio (with or without overlays), replace audio and optionally apply overlays
         if let videoURL = videoURL,
             let audioURL = audioURL,
             FileManager.default.fileExists(atPath: videoURL.path),
-            FileManager.default.fileExists(atPath: audioURL.path),
-            ((textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty))
+            FileManager.default.fileExists(atPath: audioURL.path)
         {
-            print("📱 [SocialShare] Video + audio + overlays detected - will replace audio and apply overlays")
+            let hasOverlays = (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty)
+            print("📱 [SocialShare] Video + audio detected - will replace audio" + (hasOverlays ? " and apply overlays" : ""))
             
             let documentsPath = FileManager.default.urls(
                 for: .documentDirectory, in: .userDomainMask)[0]

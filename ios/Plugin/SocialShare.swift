@@ -603,6 +603,8 @@ public class SocialShare: CAPPlugin {
             FileManager.default.fileExists(atPath: audioURL.path)
         {
             print("📱 [SocialShare] Creating video from image + audio")
+            print("📱 [SocialShare] Image path: \(imageURL.path)")
+            print("📱 [SocialShare] Audio path: \(audioURL.path)")
             let backgroundImage = UIImage(contentsOfFile: imageURL.path)
             print("📱 [SocialShare] Background image loaded: \(backgroundImage != nil)")
 
@@ -643,8 +645,10 @@ public class SocialShare: CAPPlugin {
             FileManager.default.fileExists(atPath: imageURL.path),
             let image = UIImage(contentsOfFile: imageURL.path)
         {
-            print("📱 [SocialShare] Sharing image only to Instagram")
+            print("📱 [SocialShare] Sharing image only to Instagram (NO AUDIO PROVIDED)")
             print("📱 [SocialShare] Image loaded successfully from: \(imageURL.path)")
+            print("⚠️ [SocialShare] audioURL: \(audioURL?.path ?? "nil")")
+            print("⚠️ [SocialShare] audioURL exists: \(audioURL != nil ? FileManager.default.fileExists(atPath: audioURL!.path) : false)")
 
             // Share image only
             if saveToDevice {

@@ -671,30 +671,16 @@ func applyOverlaysToVideo(
             of: videoTrack,
             at: .zero
         )
+        compositionVideoTrack.preferredTransform = videoTrack.preferredTransform
     } catch {
         print("❌ [Overlays] Failed to insert video track: \(error)")
         completion(false, nil)
         return
     }
     
-    // Add audio track if present
-    if let audioTrack = videoAsset.tracks(withMediaType: .audio).first {
-        if let compositionAudioTrack = composition.addMutableTrack(
-            withMediaType: .audio,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) {
-            do {
-                try compositionAudioTrack.insertTimeRange(
-                    CMTimeRange(start: .zero, duration: videoDuration),
-                    of: audioTrack,
-                    at: .zero
-                )
-                print("📱 [Overlays] Audio track added successfully")
-            } catch {
-                print("⚠️ [Overlays] Failed to insert audio track: \(error)")
-            }
-        }
-    }
+    // DO NOT add audio track from original video - we want video only
+    // (This function is for overlays only, audio replacement is handled elsewhere)
+    print("📱 [Overlays] Video track added, NO audio track (video will be silent or use external audio)")
     
     // Create video composition with overlays
     let videoComposition = AVMutableVideoComposition()
@@ -850,7 +836,13 @@ func replaceVideoAudioAndApplyOverlays(
     print("📱 [Audio+Overlays] Original video has \(originalAudioTracks.count) audio track(s)")
     if originalAudioTracks.count > 0 {
         print("📱 [Audio+Overlays] ⚠️ STRIPPING original video audio - will NOT be included in output")
+        for (index, audioTrack) in originalAudioTracks.enumerated() {
+            print("📱 [Audio+Overlays]   - Audio track \(index): ID=\(audioTrack.trackID), duration=\(CMTimeGetSeconds(audioTrack.timeRange.duration))s")
+        }
     }
+    
+    // CRITICAL: Verify we're NOT accidentally adding audio tracks from the video
+    print("📱 [Audio+Overlays] Video track to be added: ID=\(videoTrack.trackID), mediaType=\(videoTrack.mediaType)")
     
     // Add ONLY the video track (EXPLICITLY excluding all audio from original video)
     guard let compositionVideoTrack = composition.addMutableTrack(
@@ -868,8 +860,18 @@ func replaceVideoAudioAndApplyOverlays(
             of: videoTrack,
             at: .zero
         )
+        // CRITICAL: Set preferred transform to maintain video orientation
+        compositionVideoTrack.preferredTransform = videoTrack.preferredTransform
+        
         print("✅ [Audio+Overlays] Video track added successfully (original audio EXCLUDED)")
         print("📱 [Audio+Overlays] Composition now has \(composition.tracks(withMediaType: .audio).count) audio track(s) - should be 0 before adding new audio")
+        
+        // VERIFY: Ensure NO audio tracks exist in composition yet
+        let audioTracksCount = composition.tracks(withMediaType: .audio).count
+        if audioTracksCount > 0 {
+            print("❌ [Audio+Overlays] ERROR: Composition has \(audioTracksCount) audio track(s) when it should have 0!")
+            print("❌ [Audio+Overlays] This means original video audio is leaking through!")
+        }
     } catch {
         print("❌ [Audio+Overlays] Failed to insert video track: \(error)")
         completion(false, nil)
@@ -987,7 +989,7 @@ func replaceVideoAudioAndApplyOverlays(
     exportSession.videoComposition = videoComposition
     exportSession.shouldOptimizeForNetworkUse = true // Optimize for sharing
     
-    // Create audio mix to ensure only the new audio track is used
+    // Create audio mix for the new audio track
     let audioMix = AVMutableAudioMix()
     let audioMixInputParameters = AVMutableAudioMixInputParameters(track: compositionAudioTrack)
     audioMixInputParameters.setVolume(1.0, at: .zero) // Full volume for new audio
@@ -1007,6 +1009,21 @@ func replaceVideoAudioAndApplyOverlays(
         switch exportSession.status {
         case .completed:
             print("✅ [Audio+Overlays] Export completed successfully")
+            
+            // VERIFY: Check what tracks are in the exported file
+            let exportedAsset = AVURLAsset(url: outputURL)
+            let exportedVideoTracks = exportedAsset.tracks(withMediaType: .video)
+            let exportedAudioTracks = exportedAsset.tracks(withMediaType: .audio)
+            print("📱 [Audio+Overlays] EXPORTED FILE VERIFICATION:")
+            print("📱 [Audio+Overlays]   - Video tracks: \(exportedVideoTracks.count)")
+            print("📱 [Audio+Overlays]   - Audio tracks: \(exportedAudioTracks.count)")
+            for (index, audioTrack) in exportedAudioTracks.enumerated() {
+                print("📱 [Audio+Overlays]   - Audio track \(index): ID=\(audioTrack.trackID), duration=\(CMTimeGetSeconds(audioTrack.timeRange.duration))s")
+            }
+            if exportedAudioTracks.count != 1 {
+                print("❌ [Audio+Overlays] ERROR: Expected 1 audio track (new song), found \(exportedAudioTracks.count)!")
+            }
+            
             completion(true, outputURL)
         case .failed:
             if let error = exportSession.error {

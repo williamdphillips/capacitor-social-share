@@ -1063,9 +1063,8 @@ public class SocialShare: CAPPlugin {
         // Use the native share sheet with video or image
         shareWithNativeSheet(
             text: caption,
-            url: contentURL,
-            videoPath: videoPath,
-            imagePath: imagePath,
+            url: contentURL ?? "",
+            imagePath: videoPath ?? imagePath,
             call: call
         )
     }
@@ -1254,12 +1253,20 @@ public class SocialShare: CAPPlugin {
             activityItems.append(shareURL)
         }
 
-        if let imagePath = imagePath,
-            let imageURL = URL(string: imagePath),
-            FileManager.default.fileExists(atPath: imageURL.path),
-            let image = UIImage(contentsOfFile: imageURL.path)
+        if let mediaPath = imagePath,
+            let mediaURL = URL(string: mediaPath),
+            FileManager.default.fileExists(atPath: mediaURL.path)
         {
-            activityItems.append(image)
+            // Check if it's a video file
+            if mediaPath.lowercased().contains(".mp4") || mediaPath.lowercased().contains(".mov") {
+                // Add video file directly
+                activityItems.append(mediaURL)
+            } else {
+                // Try to load as image
+                if let image = UIImage(contentsOfFile: mediaURL.path) {
+                    activityItems.append(image)
+                }
+            }
         }
 
         if activityItems.isEmpty {

@@ -790,3 +790,196 @@ func applyOverlaysToVideo(
         }
     }
 }
+
+// Replace video's audio track with new audio and apply overlays
+func replaceVideoAudioAndApplyOverlays(
+    videoURL: URL,
+    audioURL: URL,
+    outputURL: URL,
+    startTime: Double,
+    duration: Double?,
+    textOverlays: [[String: Any]]?,
+    imageOverlays: [[String: Any]]?,
+    completion: @escaping (Bool, URL?) -> Void
+) {
+    print("📱 [Audio+Overlays] Starting video audio replacement and overlay application")
+    print("📱 [Audio+Overlays] Video: \(videoURL.path)")
+    print("📱 [Audio+Overlays] Audio: \(audioURL.path)")
+    print("📱 [Audio+Overlays] Start time: \(startTime)s, Duration: \(duration?.description ?? "auto")")
+    
+    let videoAsset = AVURLAsset(url: videoURL)
+    let audioAsset = AVURLAsset(url: audioURL)
+    
+    guard let videoTrack = videoAsset.tracks(withMediaType: .video).first else {
+        print("❌ [Audio+Overlays] No video track found")
+        completion(false, nil)
+        return
+    }
+    
+    let composition = AVMutableComposition()
+    
+    // Calculate duration
+    let audioStartTime = CMTime(seconds: startTime, preferredTimescale: 600)
+    let videoDuration = videoAsset.duration
+    let audioDuration = audioAsset.duration
+    let audioRemainingDuration = CMTimeSubtract(audioDuration, audioStartTime)
+    
+    // Use the shorter of: video duration, specified duration, or remaining audio duration
+    var finalDuration = videoDuration
+    if let specifiedDuration = duration {
+        let specifiedCMTime = CMTime(seconds: specifiedDuration, preferredTimescale: 600)
+        finalDuration = CMTimeMinimum(finalDuration, specifiedCMTime)
+    }
+    finalDuration = CMTimeMinimum(finalDuration, audioRemainingDuration)
+    
+    print("📱 [Audio+Overlays] Video duration: \(CMTimeGetSeconds(videoDuration))s")
+    print("📱 [Audio+Overlays] Audio duration: \(CMTimeGetSeconds(audioDuration))s")
+    print("📱 [Audio+Overlays] Final duration: \(CMTimeGetSeconds(finalDuration))s")
+    
+    // Add video track
+    guard let compositionVideoTrack = composition.addMutableTrack(
+        withMediaType: .video,
+        preferredTrackID: kCMPersistentTrackID_Invalid
+    ) else {
+        print("❌ [Audio+Overlays] Failed to add video track to composition")
+        completion(false, nil)
+        return
+    }
+    
+    do {
+        try compositionVideoTrack.insertTimeRange(
+            CMTimeRange(start: .zero, duration: finalDuration),
+            of: videoTrack,
+            at: .zero
+        )
+        print("✅ [Audio+Overlays] Video track added successfully")
+    } catch {
+        print("❌ [Audio+Overlays] Failed to insert video track: \(error)")
+        completion(false, nil)
+        return
+    }
+    
+    // Add new audio track (replacing the original)
+    if let audioTrack = audioAsset.tracks(withMediaType: .audio).first {
+        if let compositionAudioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) {
+            do {
+                try compositionAudioTrack.insertTimeRange(
+                    CMTimeRange(start: audioStartTime, duration: finalDuration),
+                    of: audioTrack,
+                    at: .zero
+                )
+                print("✅ [Audio+Overlays] Audio track replaced successfully")
+            } catch {
+                print("⚠️ [Audio+Overlays] Failed to insert audio track: \(error)")
+            }
+        }
+    } else {
+        print("⚠️ [Audio+Overlays] No audio track found in audio file")
+    }
+    
+    // Create video composition with overlays
+    let videoComposition = AVMutableVideoComposition()
+    videoComposition.renderSize = videoTrack.naturalSize
+    videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+    
+    let instruction = AVMutableVideoCompositionInstruction()
+    instruction.timeRange = CMTimeRange(start: .zero, duration: finalDuration)
+    
+    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+    instruction.layerInstructions = [layerInstruction]
+    videoComposition.instructions = [instruction]
+    
+    // Add overlays if provided
+    if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) {
+        print("📱 [Audio+Overlays] Creating overlay layers")
+        
+        // Create parent layer for the video
+        let parentLayer = CALayer()
+        parentLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        
+        // Create video layer
+        let videoLayer = CALayer()
+        videoLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        parentLayer.addSublayer(videoLayer)
+        
+        // Add image overlays
+        if let imageOverlays = imageOverlays {
+            for (index, overlay) in imageOverlays.enumerated() {
+                if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                    parentLayer.addSublayer(imageLayer)
+                    print("📱 [Audio+Overlays] Added image overlay \(index + 1)")
+                }
+            }
+        }
+        
+        // Add text overlays
+        if let textOverlays = textOverlays {
+            for (index, overlay) in textOverlays.enumerated() {
+                if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                    parentLayer.addSublayer(textLayer)
+                    print("📱 [Audio+Overlays] Added text overlay \(index + 1)")
+                }
+            }
+        }
+        
+        // Apply animation tool
+        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
+            postProcessingAsVideoLayer: videoLayer,
+            in: parentLayer
+        )
+    }
+    
+    // Remove existing file if necessary
+    if FileManager.default.fileExists(atPath: outputURL.path) {
+        do {
+            try FileManager.default.removeItem(atPath: outputURL.path)
+            print("📱 [Audio+Overlays] Removed existing file at output path")
+        } catch {
+            print("❌ [Audio+Overlays] Failed to remove existing file: \(error)")
+            completion(false, nil)
+            return
+        }
+    }
+    
+    // Export video with new audio and overlays
+    guard let exportSession = AVAssetExportSession(
+        asset: composition,
+        presetName: AVAssetExportPresetHighestQuality
+    ) else {
+        print("❌ [Audio+Overlays] Failed to create export session")
+        completion(false, nil)
+        return
+    }
+    
+    exportSession.outputURL = outputURL
+    exportSession.outputFileType = .mp4
+    exportSession.videoComposition = videoComposition
+    exportSession.shouldOptimizeForNetworkUse = false
+    
+    if #available(iOS 11.0, *) {
+        exportSession.canPerformMultiplePassesOverSourceMediaData = true
+    }
+    
+    print("📱 [Audio+Overlays] Starting export...")
+    exportSession.exportAsynchronously {
+        switch exportSession.status {
+        case .completed:
+            print("✅ [Audio+Overlays] Export completed successfully")
+            completion(true, outputURL)
+        case .failed:
+            if let error = exportSession.error {
+                print("❌ [Audio+Overlays] Export failed: \(error.localizedDescription)")
+            }
+            completion(false, nil)
+        case .cancelled:
+            print("⚠️ [Audio+Overlays] Export cancelled")
+            completion(false, nil)
+        default:
+            print("❌ [Audio+Overlays] Export status: \(exportSession.status.rawValue)")
+            completion(false, nil)
+        }
+    }
+}

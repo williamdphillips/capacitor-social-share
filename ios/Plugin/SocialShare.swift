@@ -517,8 +517,45 @@ public class SocialShare: CAPPlugin {
         print("   - videoURL: \(videoURL?.path ?? "nil")")
         print("   - audioURL: \(audioURL?.path ?? "nil")")
 
-        // Priority 1: If video is provided with overlays, apply overlays to video
+        // Priority 1: If video is provided with audio and overlays, replace audio and apply overlays
         if let videoURL = videoURL,
+            let audioURL = audioURL,
+            FileManager.default.fileExists(atPath: videoURL.path),
+            FileManager.default.fileExists(atPath: audioURL.path),
+            ((textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty))
+        {
+            print("📱 [SocialShare] Video + audio + overlays detected - will replace audio and apply overlays")
+            
+            let documentsPath = FileManager.default.urls(
+                for: .documentDirectory, in: .userDomainMask)[0]
+            let outputURL = documentsPath.appendingPathComponent(
+                "instagram_video_audio_overlays_\(Date().timeIntervalSince1970).mp4")
+            
+            // First, replace the video's audio track with the provided audio
+            replaceVideoAudioAndApplyOverlays(
+                videoURL: videoURL,
+                audioURL: audioURL,
+                outputURL: outputURL,
+                startTime: startTime,
+                duration: duration,
+                textOverlays: textOverlays,
+                imageOverlays: imageOverlays
+            ) { success, finalVideoURL in
+                if success, let finalVideoURL = finalVideoURL {
+                    print("📱 [SocialShare] Video with audio and overlays created at: \(finalVideoURL.path)")
+                    if saveToDevice {
+                        self.saveVideoToPhotosAndOpenInstagram(videoURL: finalVideoURL, call: call)
+                    } else {
+                        self.shareVideoToInstagramDirectly(videoURL: finalVideoURL, call: call)
+                    }
+                } else {
+                    print("❌ [SocialShare] Failed to replace audio and apply overlays to video")
+                    call.reject("Failed to replace audio and apply overlays to video")
+                }
+            }
+        }
+        // Priority 2: If video is provided with overlays (no audio replacement), apply overlays to video
+        else if let videoURL = videoURL,
             FileManager.default.fileExists(atPath: videoURL.path),
             ((textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty))
         {

@@ -354,7 +354,7 @@ export class SocialShareWeb extends WebPlugin implements SocialSharePlugin {
 
                 // Create video blob
                 const videoBlob = new Blob(chunks, { type: 'video/webm' });
-                
+
                 // Convert to File
                 const videoFile = new File([videoBlob], 'story.webm', { type: 'video/webm' });
                 console.log(`🎥 Video generated: ${videoFile.size} bytes`);

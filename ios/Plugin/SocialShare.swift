@@ -1036,12 +1036,14 @@ public class SocialShare: CAPPlugin {
         }
     }
 
-    // TikTok sharing
+    // TikTok sharing - uses native share sheet since TikTok has no direct sharing API
     private func shareToTikTok(call: CAPPluginCall) {
         let text = call.getString("text") ?? ""
         let hashtags = call.getArray("hashtags") as? [String] ?? []
         let videoPath = call.getString("videoPath")
         let imagePath = call.getString("imagePath")
+        let audioPath = call.getString("audioPath")
+        let contentURL = call.getString("contentURL")
 
         var caption = text
         if !hashtags.isEmpty {
@@ -1049,23 +1051,23 @@ public class SocialShare: CAPPlugin {
                 (caption.isEmpty ? "" : " ") + hashtags.map { "#\($0)" }.joined(separator: " ")
         }
 
-        // Try TikTok app
-        if let tiktokURL = URL(string: "tiktok://"),
-            UIApplication.shared.canOpenURL(tiktokURL)
-        {
-            UIApplication.shared.open(tiktokURL, options: [:]) { success in
-                if success {
-                    call.resolve([
-                        "status": "shared", "app": "tiktok",
-                        "note": "Please upload your content manually in TikTok",
-                    ])
-                } else {
-                    call.reject("Failed to open TikTok app")
-                }
-            }
-        } else {
-            call.reject("TikTok app is not installed")
-        }
+        print("📱 TIKTOK: Sharing with native share sheet")
+        print("📱 TIKTOK: Video path: \(videoPath ?? "none")")
+        print("📱 TIKTOK: Image path: \(imagePath ?? "none")")
+        print("📱 TIKTOK: Caption: \(caption)")
+
+        // TikTok doesn't have a direct sharing API like Instagram
+        // Best approach is to use the native share sheet with the video/image
+        // This allows users to save to Files, share to TikTok (if available), or other apps
+        
+        // Use the native share sheet with video or image
+        shareWithNativeSheet(
+            text: caption,
+            url: contentURL,
+            videoPath: videoPath,
+            imagePath: imagePath,
+            call: call
+        )
     }
 
     // WhatsApp sharing

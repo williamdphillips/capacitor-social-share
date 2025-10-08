@@ -554,7 +554,14 @@ func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CALay
         image = UIImage(contentsOfFile: url.path)
     } else if let imageData = overlay["imageData"] as? String {
         if let data = Data(base64Encoded: imageData) {
-            image = UIImage(data: data)
+            // Decompress image data to reduce memory spikes during rendering
+            if let decodedImage = UIImage(data: data) {
+                // Force decode the image to avoid decompression during rendering
+                UIGraphicsBeginImageContextWithOptions(decodedImage.size, false, 1.0)
+                decodedImage.draw(at: .zero)
+                image = UIGraphicsGetImageFromCurrentImageContext()
+                UIGraphicsEndImageContext()
+            }
         }
     }
     
@@ -562,6 +569,8 @@ func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CALay
         print("❌ [Overlays] Failed to load image")
         return nil
     }
+    
+    print("📱 [Overlays] Image loaded: \(finalImage.size.width)x\(finalImage.size.height)")
     
     // Calculate position and size (percentages to pixels)
     let x = (xPercent / 100.0) * Double(videoSize.width)
@@ -945,9 +954,10 @@ func replaceVideoAudioAndApplyOverlays(
     }
     
     // Export video with new audio and overlays
+    // Use Medium quality preset to reduce memory usage (Instagram will compress anyway)
     guard let exportSession = AVAssetExportSession(
         asset: composition,
-        presetName: AVAssetExportPresetHighestQuality
+        presetName: AVAssetExportPreset1920x1080
     ) else {
         print("❌ [Audio+Overlays] Failed to create export session")
         completion(false, nil)
@@ -957,10 +967,11 @@ func replaceVideoAudioAndApplyOverlays(
     exportSession.outputURL = outputURL
     exportSession.outputFileType = .mp4
     exportSession.videoComposition = videoComposition
-    exportSession.shouldOptimizeForNetworkUse = false
+    exportSession.shouldOptimizeForNetworkUse = true // Optimize for sharing
     
+    // Disable multiple passes to reduce memory usage
     if #available(iOS 11.0, *) {
-        exportSession.canPerformMultiplePassesOverSourceMediaData = true
+        exportSession.canPerformMultiplePassesOverSourceMediaData = false
     }
     
     print("📱 [Audio+Overlays] Starting export...")

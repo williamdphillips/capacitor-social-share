@@ -189,6 +189,7 @@ public class SocialShare: CAPPlugin {
         let saveToDevice = call.getBool("saveToDevice") ?? false
         let textOverlays = call.getArray("textOverlays", [String: Any].self)
         let imageOverlays = call.getArray("imageOverlays", [String: Any].self)
+        let timeBasedTextOverlays = call.getArray("timeBasedTextOverlays", [String: Any].self)
 
         // Videos are now created automatically from imagePath + audioPath
 
@@ -227,7 +228,8 @@ public class SocialShare: CAPPlugin {
                 backgroundColor: backgroundImage == nil ? backgroundColor : nil,  // Use backgroundColor only if backgroundImage is nil
                 backgroundImage: backgroundImage,  // Use the full-screen image if provided
                 textOverlays: textOverlays,
-                imageOverlays: imageOverlays
+                imageOverlays: imageOverlays,
+                timeBasedTextOverlays: timeBasedTextOverlays
             ) { success, videoURL in
                 if success, let videoURL = videoURL {
                     if saveToDevice {
@@ -478,6 +480,9 @@ public class SocialShare: CAPPlugin {
 
     // Instagram sharing with native picker (Story/Reels/Messages/Feed)
     private func shareToInstagram(call: CAPPluginCall) {
+        // CRITICAL DEBUG: This log MUST appear if code is updated
+        print("🔥🔥🔥 [SocialShare] shareToInstagram CALLED - VERSION WITH TIMEBASED OVERLAYS 🔥🔥🔥")
+        print("📱 [SocialShare] ========== STARTING shareToInstagram ==========")
         print("📱 [SocialShare] Starting Instagram sharing process")
 
         let saveToDevice = call.getBool("saveToDevice") ?? false
@@ -490,8 +495,51 @@ public class SocialShare: CAPPlugin {
         let backgroundColor = call.getString("backgroundColor") ?? "#000000"
         let startTime = call.getDouble("startTime") ?? 0.0
         let duration = call.getDouble("duration")  // Optional duration parameter
+        let videoStartTime = call.getDouble("videoStartTime")  // Optional video start time parameter
         let textOverlays = call.getArray("textOverlays", [String: Any].self)
         let imageOverlays = call.getArray("imageOverlays", [String: Any].self)
+        
+        // Get timeBasedTextOverlays - try multiple methods
+        var timeBasedTextOverlays: [[String: Any]]? = nil
+        
+        // Method 1: Try getArray with type parameter
+        if let array = call.getArray("timeBasedTextOverlays", [String: Any].self) {
+            timeBasedTextOverlays = array
+            print("📱 [SocialShare] ✅ Got timeBasedTextOverlays via getArray: \(array.count) items")
+        } else {
+            print("📱 [SocialShare] ⚠️ getArray returned nil, trying raw options...")
+            
+            // Method 2: Try raw options
+            if let options = call.options as? [String: Any],
+               let rawValue = options["timeBasedTextOverlays"] {
+                print("📱 [SocialShare] DEBUG: Raw value type: \(type(of: rawValue))")
+                
+                if let rawArray = rawValue as? [[String: Any]] {
+                    timeBasedTextOverlays = rawArray
+                    print("📱 [SocialShare] ✅ Got timeBasedTextOverlays via raw cast: \(rawArray.count) items")
+                } else if let nsArray = rawValue as? NSArray {
+                    // Try converting NSArray to Swift array
+                    var swiftArray: [[String: Any]] = []
+                    for item in nsArray {
+                        if let dict = item as? [String: Any] {
+                            swiftArray.append(dict)
+                        }
+                    }
+                    if !swiftArray.isEmpty {
+                        timeBasedTextOverlays = swiftArray
+                        print("📱 [SocialShare] ✅ Got timeBasedTextOverlays via NSArray conversion: \(swiftArray.count) items")
+                    } else {
+                        print("📱 [SocialShare] ❌ Failed to convert NSArray to [[String: Any]]")
+                    }
+                } else {
+                    print("📱 [SocialShare] ❌ Raw value is not an array type")
+                }
+            } else {
+                print("📱 [SocialShare] ❌ timeBasedTextOverlays key not found in options")
+            }
+        }
+        
+        print("📱 [SocialShare] Final timeBasedTextOverlays: \(timeBasedTextOverlays == nil ? "nil" : "\(timeBasedTextOverlays!.count) items")")
 
         print("📱 [SocialShare] Instagram sharing parameters:")
         print("   - saveToDevice: \(saveToDevice)")
@@ -504,8 +552,10 @@ public class SocialShare: CAPPlugin {
         print("   - backgroundColor: \(backgroundColor)")
         print("   - startTime: \(startTime)")
         print("   - duration: \(duration?.description ?? "auto")")
+        print("   - videoStartTime: \(videoStartTime?.description ?? "nil")")
         print("   - textOverlays: \(textOverlays?.count ?? 0)")
         print("   - imageOverlays: \(imageOverlays?.count ?? 0)")
+        print("   - timeBasedTextOverlays: \(timeBasedTextOverlays?.count ?? 0)")
 
         // Get file URLs from paths or base64 data
         let imageURL = getFileURL(from: imagePath, orData: imageData, withExtension: "jpg")
@@ -549,7 +599,7 @@ public class SocialShare: CAPPlugin {
             FileManager.default.fileExists(atPath: audioURL.path)
         {
             print("🎯 [SocialShare] PRIORITY 1: Video + Audio + Overlays path selected")
-            let hasOverlays = (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty)
+            let hasOverlays = (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) || (timeBasedTextOverlays != nil && !timeBasedTextOverlays!.isEmpty)
             print("📱 [SocialShare] Video + audio detected - will replace audio" + (hasOverlays ? " and apply overlays" : ""))
             
             let documentsPath = FileManager.default.urls(
@@ -564,8 +614,10 @@ public class SocialShare: CAPPlugin {
                 outputURL: outputURL,
                 startTime: startTime,
                 duration: duration,
+                videoStartTime: videoStartTime,
                 textOverlays: textOverlays,
-                imageOverlays: imageOverlays
+                imageOverlays: imageOverlays,
+                timeBasedTextOverlays: timeBasedTextOverlays
             ) { success, finalVideoURL in
                 if success, let finalVideoURL = finalVideoURL {
                     print("📱 [SocialShare] Video with audio and overlays created at: \(finalVideoURL.path)")
@@ -583,7 +635,7 @@ public class SocialShare: CAPPlugin {
         // Priority 2: If video is provided with overlays (no audio replacement), apply overlays to video
         else if let videoURL = videoURL,
             FileManager.default.fileExists(atPath: videoURL.path),
-            ((textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty))
+            ((textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) || (timeBasedTextOverlays != nil && !timeBasedTextOverlays!.isEmpty))
         {
             print("🎯 [SocialShare] PRIORITY 2: Video + Overlays (NO audio replacement) path selected")
             print("⚠️ [SocialShare] WARNING: Original video audio will be preserved!")
@@ -598,7 +650,8 @@ public class SocialShare: CAPPlugin {
                 videoURL: videoURL,
                 outputURL: outputURL,
                 textOverlays: textOverlays,
-                imageOverlays: imageOverlays
+                imageOverlays: imageOverlays,
+                timeBasedTextOverlays: timeBasedTextOverlays
             ) { success, finalVideoURL in
                 if success, let finalVideoURL = finalVideoURL {
                     print("📱 [SocialShare] Video with overlays created at: \(finalVideoURL.path)")
@@ -652,7 +705,8 @@ public class SocialShare: CAPPlugin {
                 backgroundColor: backgroundImage == nil ? backgroundColor : nil,
                 backgroundImage: backgroundImage,
                 textOverlays: textOverlays,
-                imageOverlays: imageOverlays
+                imageOverlays: imageOverlays,
+                timeBasedTextOverlays: timeBasedTextOverlays
             ) { success, videoURL in
                 print("📱 [SocialShare] Video creation completed - success: \(success)")
                 if success, let videoURL = videoURL {

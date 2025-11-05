@@ -28,7 +28,10 @@
         "lint:fix": "eslint src/**/*.ts --fix"
     },
     "dependencies": {
-        "@capacitor/core": "^6.0.0"
+        "@capacitor/core": "^7.0.0"
+    },
+    "peerDependencies": {
+        "@capacitor/core": "^7.0.0"
     },
     "devDependencies": {
         "@rollup/plugin-commonjs": "^21.1.0",

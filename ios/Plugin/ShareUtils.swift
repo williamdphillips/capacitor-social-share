@@ -24,9 +24,16 @@ extension UIColor {
     }
 }
 
+extension UIFont {
+    func withTraits(_ traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
+        let descriptor = fontDescriptor.withSymbolicTraits(traits)
+        return UIFont(descriptor: descriptor ?? fontDescriptor, size: pointSize)
+    }
+}
+
 func createVideoFromImageAndAudio(
     audioURL: URL, outputURL: URL, startTime: Double, duration: Double?, backgroundColor: String?,
-    backgroundImage: UIImage?, textOverlays: [[String: Any]]? = nil, imageOverlays: [[String: Any]]? = nil, completion: @escaping (Bool, URL?) -> Void
+    backgroundImage: UIImage?, textOverlays: [[String: Any]]? = nil, imageOverlays: [[String: Any]]? = nil, timeBasedTextOverlays: [[String: Any]]? = nil, completion: @escaping (Bool, URL?) -> Void
 ) {
     let size = CGSize(width: 1080, height: 1920)
 
@@ -35,7 +42,12 @@ func createVideoFromImageAndAudio(
     let background: UIImage?
     if let bgImage = backgroundImage {
         print("Using provided background image.")
-        background = bgImage
+        // Ensure image is rendered at full quality without compression
+        // Redraw to avoid any potential color space or compression issues
+        UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
+        bgImage.draw(in: CGRect(origin: .zero, size: size))
+        background = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
     } else if let bgColor = backgroundColor, let uiBackgroundColor = UIColor(hex: bgColor) {
         print("Using provided background color \(bgColor)")
         background = uiBackgroundColor.image(size: size)
@@ -66,6 +78,7 @@ func createVideoFromImageAndAudio(
                 backgroundImage: backgroundImage,
                 textOverlays: textOverlays,
                 imageOverlays: imageOverlays,
+                timeBasedTextOverlays: timeBasedTextOverlays,
                 completion: completion)
         }
         return
@@ -172,8 +185,13 @@ func createVideoFromImageAndAudio(
         videoComposition.instructions = [instruction]
         
         // Add overlays if provided
-        if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) {
-            print("📱 [Overlays] Adding \(textOverlays?.count ?? 0) text overlays and \(imageOverlays?.count ?? 0) image overlays")
+        if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) || (timeBasedTextOverlays != nil && !timeBasedTextOverlays!.isEmpty) {
+            print("📱 [Overlays] Adding \(textOverlays?.count ?? 0) text overlays, \(imageOverlays?.count ?? 0) image overlays, and \(timeBasedTextOverlays?.count ?? 0) time-based text overlays")
+            if let timeBased = timeBasedTextOverlays {
+                print("📱 [Overlays] ✅ timeBasedTextOverlays is NOT nil, count: \(timeBased.count)")
+            } else {
+                print("📱 [Overlays] ❌ timeBasedTextOverlays is nil")
+            }
             
             // Create parent layer for the video
             let parentLayer = CALayer()
@@ -184,25 +202,45 @@ func createVideoFromImageAndAudio(
             videoLayer.frame = CGRect(origin: .zero, size: size)
             parentLayer.addSublayer(videoLayer)
             
-            // Add image overlays
+            // Add image overlays (can be time-based)
             if let imageOverlays = imageOverlays {
                 for (index, overlay) in imageOverlays.enumerated() {
-                    if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: size) {
+                    if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: size, videoDuration: audioDuration) {
                         parentLayer.addSublayer(imageLayer)
                         print("📱 [Overlays] Added image overlay \(index + 1)")
                     }
                 }
             }
             
-            // Add text overlays
+            // Add text overlays (can be time-based)
             if let textOverlays = textOverlays {
                 for (index, overlay) in textOverlays.enumerated() {
-                    if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: size) {
+                    if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: size, videoDuration: audioDuration) {
                         parentLayer.addSublayer(textLayer)
                         print("📱 [Overlays] Added text overlay \(index + 1)")
                     }
                 }
             }
+            
+            // Add time-based text overlays (with animations)
+            if let timeBasedTextOverlays = timeBasedTextOverlays {
+                print("📱 [Overlays] Processing \(timeBasedTextOverlays.count) time-based text overlays")
+                for (index, overlay) in timeBasedTextOverlays.enumerated() {
+                    if let textLayer = createTimeBasedTextOverlayLayer(overlay: overlay, videoSize: size, videoDuration: audioDuration) {
+                        // Ensure the layer is properly configured for video composition
+                        textLayer.speed = 1.0
+                        textLayer.timeOffset = 0.0
+                        parentLayer.addSublayer(textLayer)
+                        print("📱 [Overlays] ✅ Added time-based text overlay \(index + 1) - text: \"\(overlay["text"] as? String ?? "unknown")\"")
+                    } else {
+                        print("❌ [Overlays] Failed to create time-based text overlay \(index + 1)")
+                    }
+                }
+            }
+            
+            // Configure parent layer for video composition
+            parentLayer.speed = 1.0
+            parentLayer.timeOffset = 0.0
             
             // Apply animation tool
             videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
@@ -492,7 +530,7 @@ func isBase64Encoded(_ string: String) -> Bool {
 }
 
 // Helper function to create text overlay layer
-func createTextOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CATextLayer? {
+func createTextOverlayLayer(overlay: [String: Any], videoSize: CGSize, videoDuration: CMTime? = nil) -> CATextLayer? {
     guard let text = overlay["text"] as? String,
           let xPercent = overlay["x"] as? Double,
           let yPercent = overlay["y"] as? Double,
@@ -502,42 +540,290 @@ func createTextOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CAText
     }
     
     let textLayer = CATextLayer()
-    textLayer.string = text
-    textLayer.fontSize = CGFloat(fontSize)
-    
-    // Parse color (default to white)
-    if let colorString = overlay["color"] as? String {
-        textLayer.foregroundColor = parseColor(colorString)?.cgColor ?? UIColor.white.cgColor
-    } else {
-        textLayer.foregroundColor = UIColor.white.cgColor
-    }
-    
-    // Set font
-    if let fontFamily = overlay["fontFamily"] as? String, fontFamily != "System" {
-        textLayer.font = CTFontCreateWithName(fontFamily as CFString, CGFloat(fontSize), nil)
-    } else {
-        textLayer.font = UIFont.systemFont(ofSize: CGFloat(fontSize)).fontName as CFTypeRef
-    }
+    // Don't set string, fontSize, or foregroundColor here - will be set via attributed string below
     
     // Calculate position (percentages to pixels)
-    let x = (xPercent / 100.0) * Double(videoSize.width)
-    let y = (yPercent / 100.0) * Double(videoSize.height)
+    // xPercent and yPercent are CENTER coordinates (from CSS transform: translate(-50%, -50%))
+    // IMPORTANT: CALayer uses bottom-left origin (Y=0 at bottom, Y increases upward)
+    // JavaScript sends coordinates with top-left origin (Y=0 at top, Y increases downward)
+    // We need to convert from top-based to bottom-based coordinates
+    let centerX = (xPercent / 100.0) * Double(videoSize.width)
+    let centerYFromTop = (yPercent / 100.0) * Double(videoSize.height)
+    let centerYFromBottom = Double(videoSize.height) - centerYFromTop
     
-    // Calculate text size
-    let textSize = (text as NSString).size(withAttributes: [
-        .font: UIFont.systemFont(ofSize: CGFloat(fontSize))
-    ])
+    // Calculate text size - use attributed string for accurate measurement
+    // Use the actual font that will be rendered
+    let fontFamily = overlay["fontFamily"] as? String
+    let font: UIFont
     
-    textLayer.frame = CGRect(x: x, y: y, width: textSize.width + 20, height: textSize.height + 10)
-    textLayer.alignmentMode = .left
+    // Parse fontWeight and fontStyle
+    let fontWeightString = overlay["fontWeight"] as? String ?? "normal"
+    let fontStyleString = overlay["fontStyle"] as? String ?? "normal"
+    let isBold = fontWeightString == "bold"
+    let isItalic = fontStyleString == "italic"
+    
+    // Handle CSS font stacks and system fonts
+    if let fontFamilyName = fontFamily, fontFamilyName != "System" {
+        // Check for CSS font stacks (e.g., "system-ui, -apple-system, ...")
+        let fontName = fontFamilyName.split(separator: ",").first?.trimmingCharacters(in: .whitespaces) ?? fontFamilyName
+        
+        // Map common CSS font names to iOS equivalents
+        if fontName.lowercased().contains("system-ui") || fontName.lowercased().contains("apple-system") {
+            if isBold && isItalic {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: .bold).withTraits(.traitItalic)
+            } else if isBold {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: .bold)
+            } else if isItalic {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize)).withTraits(.traitItalic)
+            } else {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize))
+            }
+        } else if fontName.lowercased().contains("segoe") {
+            // Fallback to system font
+            if isBold && isItalic {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: .bold).withTraits(.traitItalic)
+            } else if isBold {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: .bold)
+            } else if isItalic {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize)).withTraits(.traitItalic)
+            } else {
+                font = UIFont.systemFont(ofSize: CGFloat(fontSize))
+            }
+        } else if fontName.lowercased().contains("roboto") {
+            // Try to use Roboto if available, otherwise fallback
+            let ctFont = CTFontCreateWithName("Roboto" as CFString, CGFloat(fontSize), nil)
+            let baseFont = UIFont(descriptor: CTFontCopyFontDescriptor(ctFont), size: CGFloat(fontSize))
+            var symbolicTraits: UIFontDescriptor.SymbolicTraits = []
+            if isBold { symbolicTraits.insert(.traitBold) }
+            if isItalic { symbolicTraits.insert(.traitItalic) }
+            if !symbolicTraits.isEmpty {
+                font = baseFont.withTraits(symbolicTraits)
+            } else {
+                font = baseFont
+            }
+        } else {
+            // Try to use the font name directly
+            let ctFont = CTFontCreateWithName(fontName as CFString, CGFloat(fontSize), nil)
+            let baseFont = UIFont(descriptor: CTFontCopyFontDescriptor(ctFont), size: CGFloat(fontSize))
+            var symbolicTraits: UIFontDescriptor.SymbolicTraits = []
+            if isBold { symbolicTraits.insert(.traitBold) }
+            if isItalic { symbolicTraits.insert(.traitItalic) }
+            if !symbolicTraits.isEmpty {
+                font = baseFont.withTraits(symbolicTraits)
+            } else {
+                font = baseFont
+            }
+        }
+    } else {
+        // System font
+        if isBold && isItalic {
+            font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: .bold).withTraits(.traitItalic)
+        } else if isBold {
+            font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: .bold)
+        } else if isItalic {
+            font = UIFont.systemFont(ofSize: CGFloat(fontSize)).withTraits(.traitItalic)
+        } else {
+            font = UIFont.systemFont(ofSize: CGFloat(fontSize))
+        }
+    }
+    
+    // Parse shadow properties (defaults match preview: 2px 2px 4px rgba(0,0,0,0.8))
+    let shadowColorString = overlay["shadowColor"] as? String ?? "rgba(0,0,0,0.8)"
+    let shadowOffsetX = overlay["shadowOffsetX"] as? Double ?? 2.0
+    let shadowOffsetY = overlay["shadowOffsetY"] as? Double ?? 2.0
+    let shadowBlur = overlay["shadowBlur"] as? Double ?? 4.0
+    
+    let shadowColor = parseColor(shadowColorString) ?? UIColor.black.withAlphaComponent(0.8)
+    
+    // Create shadow attribute
+    let shadow = NSShadow()
+    shadow.shadowColor = shadowColor
+    shadow.shadowOffset = CGSize(width: shadowOffsetX, height: shadowOffsetY)
+    shadow.shadowBlurRadius = CGFloat(shadowBlur)
+    
+    // Create attributed string with font and shadow
+    let attributedText = NSAttributedString(
+        string: text,
+        attributes: [
+            .font: font,
+            .foregroundColor: parseColor(overlay["color"] as? String ?? "#FFFFFF") ?? UIColor.white,
+            .shadow: shadow
+        ]
+    )
+    // Calculate text size with proper width constraint for wrapping
+    // Use video width minus padding to allow text to wrap naturally
+    let maxTextWidth = videoSize.width - 200 // Leave padding on sides
+    let textSize = attributedText.boundingRect(
+        with: CGSize(width: maxTextWidth, height: CGFloat.greatestFiniteMagnitude),
+        options: [.usesLineFragmentOrigin, .usesFontLeading],
+        context: nil
+    ).size
+    
+    // Calculate frame width - use actual text width plus padding
+    let padding: CGFloat = 100 // More generous padding to prevent cutoff
+    var frameWidth = min(textSize.width + padding, videoSize.width) // Don't exceed video width
+    frameWidth = max(frameWidth, 200) // Minimum 200px width
+    
+    // Calculate frame height with padding for multi-line text
+    let frameHeight = max(textSize.height + 40, 40)
+    
+    // Convert center coordinates to bottom-left corner for CALayer frame
+    // CALayer frame.origin is the bottom-left corner
+    let frameX = centerX - (frameWidth / 2.0)
+    let frameY = centerYFromBottom - (frameHeight / 2.0)
+    
+    // Clamp to video bounds
+    let adjustedFrameX = max(0, min(frameX, videoSize.width - frameWidth))
+    let adjustedFrameY = max(0, min(frameY, videoSize.height - frameHeight))
+    
+    textLayer.frame = CGRect(
+        x: adjustedFrameX,
+        y: adjustedFrameY,
+        width: frameWidth,
+        height: frameHeight
+    )
+    textLayer.string = attributedText // Use attributed string with shadow
+    textLayer.alignmentMode = .center // Center align to match UI (x/y are center positions)
+    textLayer.isWrapped = true // Enable text wrapping if needed
     textLayer.contentsScale = UIScreen.main.scale
     
-    print("📱 [Overlays] Text layer created: \"\(text)\" at (\(x), \(y))")
+    print("📱 [Overlays] Text frame (BOTTOM-LEFT ORIGIN): centerX=\(centerX), centerY_from_top=\(centerYFromTop)px, centerY_from_bottom=\(centerYFromBottom)px, frameWidth=\(frameWidth), frameHeight=\(frameHeight), frame.origin.x=\(adjustedFrameX), frame.origin.y=\(adjustedFrameY)")
+    
+    // Check if this is a time-based overlay
+    if let startTime = overlay["startTime"] as? Double,
+       let endTime = overlay["endTime"] as? Double,
+       let duration = videoDuration {
+        // Set initial opacity to 0 (hidden)
+        textLayer.opacity = 0.0
+        
+        // Create fade-in animation
+        let fadeInDuration = min(0.3, (endTime - startTime) / 2.0)
+        
+        let fadeIn = CABasicAnimation(keyPath: "opacity")
+        fadeIn.fromValue = 0.0
+        fadeIn.toValue = 1.0
+        fadeIn.beginTime = AVCoreAnimationBeginTimeAtZero + startTime
+        fadeIn.duration = fadeInDuration
+        fadeIn.fillMode = .forwards
+        fadeIn.isRemovedOnCompletion = false
+        
+        // Create fade-out animation
+        let fadeOutStart = endTime - fadeInDuration
+        let fadeOut = CABasicAnimation(keyPath: "opacity")
+        fadeOut.fromValue = 1.0
+        fadeOut.toValue = 0.0
+        fadeOut.beginTime = AVCoreAnimationBeginTimeAtZero + fadeOutStart
+        fadeOut.duration = fadeInDuration
+        fadeOut.fillMode = .forwards
+        fadeOut.isRemovedOnCompletion = false
+        
+        // Add animations to layer
+        textLayer.add(fadeIn, forKey: "fadeIn")
+        textLayer.add(fadeOut, forKey: "fadeOut")
+        
+        print("📱 [Overlays] Time-based text layer created: \"\(text)\" at (\(startTime)s - \(endTime)s)")
+    } else {
+        print("📱 [Overlays] Text layer created: \"\(text)\" at (\(adjustedFrameX), \(adjustedFrameY))")
+    }
+    
+    return textLayer
+}
+
+// Helper function to create time-based text overlay layer with animations
+func createTimeBasedTextOverlayLayer(overlay: [String: Any], videoSize: CGSize, videoDuration: CMTime) -> CATextLayer? {
+    guard let text = overlay["text"] as? String,
+          let xPercent = overlay["x"] as? Double,
+          let yPercent = overlay["y"] as? Double,
+          let fontSize = overlay["fontSize"] as? Double,
+          let startTime = overlay["startTime"] as? Double,
+          let endTime = overlay["endTime"] as? Double else {
+        print("❌ [Overlays] Invalid time-based text overlay data")
+        return nil
+    }
+    
+    // Create the text layer (pass nil for videoDuration to skip the time-based check in createTextOverlayLayer)
+    // We'll handle animations ourselves here
+    var overlayWithoutTime = overlay
+    overlayWithoutTime.removeValue(forKey: "startTime")
+    overlayWithoutTime.removeValue(forKey: "endTime")
+    guard let textLayer = createTextOverlayLayer(overlay: overlayWithoutTime, videoSize: videoSize, videoDuration: nil) else {
+        return nil
+    }
+    
+    // Use CAKeyframeAnimation for more reliable video composition timing
+    // This explicitly defines opacity at key times throughout the video
+    let totalDuration = videoDuration.seconds
+    let fadeDuration = min(0.2, max(0.05, (endTime - startTime) / 4.0))
+    
+    // Create keyframe animation that defines opacity at each key time
+    let keyframeAnimation = CAKeyframeAnimation(keyPath: "opacity")
+    
+    // Calculate key times (normalized 0.0 to 1.0)
+    var keyTimes: [NSNumber] = []
+    var values: [Any] = []
+    
+    // Before start: opacity 0
+    if startTime > 0 {
+        keyTimes.append(0.0)
+        values.append(0.0)
+    }
+    
+    // Fade in start
+    let fadeInStart = max(0.0, startTime - fadeDuration)
+    if fadeInStart > 0 && fadeInStart < totalDuration {
+        keyTimes.append(NSNumber(value: fadeInStart / totalDuration))
+        values.append(0.0)
+    }
+    
+    // Fully visible
+    let visibleStart = startTime
+    let visibleEnd = endTime
+    if visibleStart < totalDuration {
+        keyTimes.append(NSNumber(value: visibleStart / totalDuration))
+        values.append(1.0)
+    }
+    
+    // Fade out
+    let fadeOutStart = min(totalDuration, endTime)
+    if fadeOutStart < totalDuration {
+        keyTimes.append(NSNumber(value: fadeOutStart / totalDuration))
+        values.append(1.0)
+    }
+    
+    // After end: opacity 0
+    let fadeOutEnd = min(totalDuration, endTime + fadeDuration)
+    if fadeOutEnd < totalDuration {
+        keyTimes.append(NSNumber(value: fadeOutEnd / totalDuration))
+        values.append(0.0)
+    }
+    
+    // End of video: opacity 0
+    if fadeOutEnd < totalDuration {
+        keyTimes.append(1.0)
+        values.append(0.0)
+    }
+    
+    keyframeAnimation.keyTimes = keyTimes
+    keyframeAnimation.values = values
+    keyframeAnimation.duration = totalDuration
+    keyframeAnimation.beginTime = AVCoreAnimationBeginTimeAtZero
+    keyframeAnimation.fillMode = .forwards
+    keyframeAnimation.isRemovedOnCompletion = false
+    
+    // Set initial opacity
+    textLayer.opacity = (startTime <= 0.1) ? 1.0 : 0.0
+    
+    // Add animation
+    textLayer.add(keyframeAnimation, forKey: "opacityAnimation")
+    
+    print("📱 [Overlays] Time-based text layer created: \"\(text)\" at (\(startTime)s - \(endTime)s) with \(keyTimes.count) keyframes")
+    print("📱 [Overlays]   Key times: \(keyTimes.map { String(format: "%.2f", $0.doubleValue) }.joined(separator: ", "))")
+    print("📱 [Overlays]   Values: \(values.map { String(format: "%.1f", ($0 as? Double ?? 0.0)) }.joined(separator: ", "))")
     return textLayer
 }
 
 // Helper function to create image overlay layer
-func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CALayer? {
+func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize, videoDuration: CMTime? = nil) -> CALayer? {
     guard let xPercent = overlay["x"] as? Double,
           let yPercent = overlay["y"] as? Double,
           let widthPercent = overlay["width"] as? Double,
@@ -573,10 +859,39 @@ func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CALay
     print("📱 [Overlays] Image loaded: \(finalImage.size.width)x\(finalImage.size.height)")
     
     // Calculate position and size (percentages to pixels)
-    let x = (xPercent / 100.0) * Double(videoSize.width)
-    let y = (yPercent / 100.0) * Double(videoSize.height)
+    // xPercent and yPercent are CENTER coordinates (from CSS transform: translate(-50%, -50%))
+    // IMPORTANT: CALayer uses bottom-left origin (Y=0 at bottom, Y increases upward)
+    // JavaScript sends coordinates with top-left origin (Y=0 at top, Y increases downward)
+    // We need to convert from top-based to bottom-based coordinates
+    let centerX = (xPercent / 100.0) * Double(videoSize.width)
+    let noInvertY = overlay["noInvertY"] as? Bool ?? false
+    print("📱 [Overlays] 🔍 WATERMARK DEBUG: noInvertY flag = \(noInvertY), yPercent received = \(yPercent)")
+    
     let width = (widthPercent / 100.0) * Double(videoSize.width)
     let height = (heightPercent / 100.0) * Double(videoSize.height)
+    
+    // Convert center coordinates to bottom-left origin for CALayer
+    // CALayer frame.origin is the bottom-left corner
+    let x = centerX - (width / 2.0)
+    let y: Double
+    
+    if noInvertY {
+        // Watermark sends BOTTOM position (large Y value like 96% from top)
+        // Convert from top-based to bottom-based: centerY_from_bottom = videoHeight - centerY_from_top
+        // Then calculate bottom-left corner: y = centerY_from_bottom - (height/2)
+        let centerYFromTop = (yPercent / 100.0) * Double(videoSize.height)
+        let centerYFromBottom = Double(videoSize.height) - centerYFromTop
+        y = centerYFromBottom - (height / 2.0)
+        print("📱 [Overlays] 🔍 WATERMARK (BOTTOM-LEFT ORIGIN): yPercent=\(yPercent)% from top, centerY_from_top=\(centerYFromTop)px, centerY_from_bottom=\(centerYFromBottom)px, frame.origin.y=\(y)px")
+    } else {
+        // Other images: convert from top-based to bottom-based coordinates
+        let centerYFromTop = (yPercent / 100.0) * Double(videoSize.height)
+        let centerYFromBottom = Double(videoSize.height) - centerYFromTop
+        y = centerYFromBottom - (height / 2.0)
+        print("📱 [Overlays] Image Y calculation (BOTTOM-LEFT ORIGIN): yPercent=\(yPercent)% from top, centerY_from_top=\(centerYFromTop)px, centerY_from_bottom=\(centerYFromBottom)px, frame.origin.y=\(y)px")
+    }
+    
+    print("📱 [Overlays] Image frame calc: centerX=\(centerX), width=\(width), height=\(height), frame.origin.x=\(x), frame.origin.y=\(y)")
     
     let imageLayer = CALayer()
     imageLayer.frame = CGRect(x: x, y: y, width: width, height: height)
@@ -585,7 +900,50 @@ func createImageOverlayLayer(overlay: [String: Any], videoSize: CGSize) -> CALay
     // Use .resizeAspect for partial overlays to maintain aspect ratio
     imageLayer.contentsGravity = (widthPercent >= 99 && heightPercent >= 99) ? .resize : .resizeAspect
     
+    // Apply corner radius if specified (for cover art rounded corners)
+    if let cornerRadius = overlay["cornerRadius"] as? Double, cornerRadius > 0 {
+        imageLayer.cornerRadius = CGFloat(cornerRadius)
+        imageLayer.masksToBounds = true
+        print("📱 [Overlays] Applied corner radius: \(cornerRadius)px")
+    }
+    
+    // Check if this is a time-based overlay
+    if let startTime = overlay["startTime"] as? Double,
+       let endTime = overlay["endTime"] as? Double,
+       let duration = videoDuration {
+        // Set initial opacity to 0 (hidden)
+        imageLayer.opacity = 0.0
+        
+        // Create fade-in animation
+        let fadeInDuration = CMTime(seconds: min(0.3, (endTime - startTime) / 2.0), preferredTimescale: 600)
+        
+        let fadeIn = CABasicAnimation(keyPath: "opacity")
+        fadeIn.fromValue = 0.0
+        fadeIn.toValue = 1.0
+        fadeIn.beginTime = AVCoreAnimationBeginTimeAtZero + startTime
+        fadeIn.duration = fadeInDuration.seconds
+        fadeIn.fillMode = .forwards
+        fadeIn.isRemovedOnCompletion = false
+        
+        // Create fade-out animation
+        let fadeOutStart = endTime - fadeInDuration.seconds
+        let fadeOut = CABasicAnimation(keyPath: "opacity")
+        fadeOut.fromValue = 1.0
+        fadeOut.toValue = 0.0
+        fadeOut.beginTime = AVCoreAnimationBeginTimeAtZero + fadeOutStart
+        fadeOut.duration = fadeInDuration.seconds
+        fadeOut.fillMode = .forwards
+        fadeOut.isRemovedOnCompletion = false
+        
+        // Add animations to layer
+        imageLayer.add(fadeIn, forKey: "fadeIn")
+        imageLayer.add(fadeOut, forKey: "fadeOut")
+        
+        print("📱 [Overlays] Time-based image layer created at (\(startTime)s - \(endTime)s)")
+    } else {
     print("📱 [Overlays] Image layer created at (\(x), \(y)) with size (\(width)x\(height)) - gravity: \(imageLayer.contentsGravity)")
+    }
+    
     return imageLayer
 }
 
@@ -641,6 +999,7 @@ func applyOverlaysToVideo(
     outputURL: URL,
     textOverlays: [[String: Any]]?,
     imageOverlays: [[String: Any]]?,
+    timeBasedTextOverlays: [[String: Any]]? = nil,
     completion: @escaping (Bool, URL?) -> Void
 ) {
     print("📱 [Overlays] Starting overlay application to video")
@@ -683,46 +1042,82 @@ func applyOverlaysToVideo(
     print("📱 [Overlays] Video track added, NO audio track (video will be silent or use external audio)")
     
     // Create video composition with overlays
+    // ALWAYS use 1080x1920 for render size and overlay calculations (Instagram story format)
+    // The video will be scaled to fit within this size
+    let targetSize = CGSize(width: 1080, height: 1920)
     let videoComposition = AVMutableVideoComposition()
-    videoComposition.renderSize = videoTrack.naturalSize
+    videoComposition.renderSize = targetSize
     videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
     
     let instruction = AVMutableVideoCompositionInstruction()
     instruction.timeRange = CMTimeRange(start: .zero, duration: videoDuration)
     
     let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+    
+    // Scale video to fit within 1080x1920 while maintaining aspect ratio
+    let naturalSize = videoTrack.naturalSize
+    let scaleX = targetSize.width / naturalSize.width
+    let scaleY = targetSize.height / naturalSize.height
+    let scale = min(scaleX, scaleY) // Use the smaller scale to ensure video fits
+    
+    // Calculate centered position
+    let scaledWidth = naturalSize.width * scale
+    let scaledHeight = naturalSize.height * scale
+    let xOffset = (targetSize.width - scaledWidth) / 2.0
+    let yOffset = (targetSize.height - scaledHeight) / 2.0
+    
+    // Apply transform to scale and center the video
+    layerInstruction.setTransform(
+        CGAffineTransform(scaleX: scale, y: scale)
+            .concatenating(CGAffineTransform(translationX: xOffset, y: yOffset)),
+        at: .zero
+    )
+    
     instruction.layerInstructions = [layerInstruction]
     videoComposition.instructions = [instruction]
     
     // Add overlays if provided
-    if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) {
+    if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) || (timeBasedTextOverlays != nil && !timeBasedTextOverlays!.isEmpty) {
         print("📱 [Overlays] Creating overlay layers")
+        print("📱 [Overlays] Video natural size: \(naturalSize.width)x\(naturalSize.height)")
+        print("📱 [Overlays] Target render size: \(targetSize.width)x\(targetSize.height)")
+        print("📱 [Overlays] Video scale: \(scale), offset: (\(xOffset), \(yOffset))")
         
-        // Create parent layer for the video
+        // Create parent layer for the video - use target size (1080x1920)
         let parentLayer = CALayer()
-        parentLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        parentLayer.frame = CGRect(origin: .zero, size: targetSize)
         
-        // Create video layer
+        // Create video layer - will be scaled and positioned by layerInstruction transform
         let videoLayer = CALayer()
-        videoLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        videoLayer.frame = CGRect(origin: .zero, size: targetSize)
         parentLayer.addSublayer(videoLayer)
         
-        // Add image overlays
+        // Add image overlays (can be time-based) - use target size for calculations
         if let imageOverlays = imageOverlays {
             for (index, overlay) in imageOverlays.enumerated() {
-                if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: targetSize, videoDuration: videoDuration) {
                     parentLayer.addSublayer(imageLayer)
                     print("📱 [Overlays] Added image overlay \(index + 1)")
                 }
             }
         }
         
-        // Add text overlays
+        // Add text overlays (can be time-based) - use target size for calculations
         if let textOverlays = textOverlays {
             for (index, overlay) in textOverlays.enumerated() {
-                if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: targetSize, videoDuration: videoDuration) {
                     parentLayer.addSublayer(textLayer)
                     print("📱 [Overlays] Added text overlay \(index + 1)")
+                }
+            }
+        }
+        
+        // Add time-based text overlays (with animations) - use target size for calculations
+        if let timeBasedTextOverlays = timeBasedTextOverlays {
+            for (index, overlay) in timeBasedTextOverlays.enumerated() {
+                if let textLayer = createTimeBasedTextOverlayLayer(overlay: overlay, videoSize: targetSize, videoDuration: videoDuration) {
+                    parentLayer.addSublayer(textLayer)
+                    print("📱 [Overlays] Added time-based text overlay \(index + 1)")
                 }
             }
         }
@@ -793,14 +1188,17 @@ func replaceVideoAudioAndApplyOverlays(
     outputURL: URL,
     startTime: Double,
     duration: Double?,
+    videoStartTime: Double? = nil,
     textOverlays: [[String: Any]]?,
     imageOverlays: [[String: Any]]?,
+    timeBasedTextOverlays: [[String: Any]]? = nil,
     completion: @escaping (Bool, URL?) -> Void
 ) {
     print("📱 [Audio+Overlays] Starting video audio replacement and overlay application")
     print("📱 [Audio+Overlays] Video: \(videoURL.path)")
     print("📱 [Audio+Overlays] Audio: \(audioURL.path)")
-    print("📱 [Audio+Overlays] Start time: \(startTime)s, Duration: \(duration?.description ?? "auto")")
+    print("📱 [Audio+Overlays] Audio start time: \(startTime)s, Duration: \(duration?.description ?? "auto")")
+    print("📱 [Audio+Overlays] Video start time: \(videoStartTime ?? 0)s")
     
     let videoAsset = AVURLAsset(url: videoURL)
     let audioAsset = AVURLAsset(url: audioURL)
@@ -819,13 +1217,21 @@ func replaceVideoAudioAndApplyOverlays(
     let audioDuration = audioAsset.duration
     let audioRemainingDuration = CMTimeSubtract(audioDuration, audioStartTime)
     
+    // Calculate video start time within the video file
+    let videoStartTimeCM = CMTime(seconds: videoStartTime ?? 0, preferredTimescale: 600)
+    let videoAvailableDuration = CMTimeSubtract(videoDuration, videoStartTimeCM)
+    
     print("🎵 [Audio+Overlays] Audio clip parameters:")
     print("   - Start time: \(startTime)s")
     print("   - Requested duration: \(duration ?? 0)s")
     print("   - Audio start time (CMTime): \(CMTimeGetSeconds(audioStartTime))s")
+    print("🎥 [Audio+Overlays] Video clip parameters:")
+    print("   - Video start time: \(videoStartTime ?? 0)s")
+    print("   - Video start time (CMTime): \(CMTimeGetSeconds(videoStartTimeCM))s")
+    print("   - Video available duration from start: \(CMTimeGetSeconds(videoAvailableDuration))s")
     
-    // Use the shorter of: video duration, specified duration, or remaining audio duration
-    var finalDuration = videoDuration
+    // Use the shorter of: available video duration, specified duration, or remaining audio duration
+    var finalDuration = videoAvailableDuration
     if let specifiedDuration = duration {
         let specifiedCMTime = CMTime(seconds: specifiedDuration, preferredTimescale: 600)
         finalDuration = CMTimeMinimum(finalDuration, specifiedCMTime)
@@ -862,8 +1268,9 @@ func replaceVideoAudioAndApplyOverlays(
     }
     
     do {
+        // Extract video from the specified start time within the video file
         try compositionVideoTrack.insertTimeRange(
-            CMTimeRange(start: .zero, duration: finalDuration),
+            CMTimeRange(start: videoStartTimeCM, duration: finalDuration),
             of: videoTrack,
             at: .zero
         )
@@ -917,46 +1324,82 @@ func replaceVideoAudioAndApplyOverlays(
     }
     
     // Create video composition with overlays
+    // ALWAYS use 1080x1920 for render size and overlay calculations (Instagram story format)
+    // The video will be scaled to fit within this size
+    let targetSize = CGSize(width: 1080, height: 1920)
     let videoComposition = AVMutableVideoComposition()
-    videoComposition.renderSize = videoTrack.naturalSize
+    videoComposition.renderSize = targetSize
     videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
     
     let instruction = AVMutableVideoCompositionInstruction()
     instruction.timeRange = CMTimeRange(start: .zero, duration: finalDuration)
     
     let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+    
+    // Scale video to fit within 1080x1920 while maintaining aspect ratio
+    let naturalSize = videoTrack.naturalSize
+    let scaleX = targetSize.width / naturalSize.width
+    let scaleY = targetSize.height / naturalSize.height
+    let scale = min(scaleX, scaleY) // Use the smaller scale to ensure video fits
+    
+    // Calculate centered position
+    let scaledWidth = naturalSize.width * scale
+    let scaledHeight = naturalSize.height * scale
+    let xOffset = (targetSize.width - scaledWidth) / 2.0
+    let yOffset = (targetSize.height - scaledHeight) / 2.0
+    
+    // Apply transform to scale and center the video
+    layerInstruction.setTransform(
+        CGAffineTransform(scaleX: scale, y: scale)
+            .concatenating(CGAffineTransform(translationX: xOffset, y: yOffset)),
+        at: .zero
+    )
+    
     instruction.layerInstructions = [layerInstruction]
     videoComposition.instructions = [instruction]
     
     // Add overlays if provided
-    if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) {
+    if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) || (timeBasedTextOverlays != nil && !timeBasedTextOverlays!.isEmpty) {
         print("📱 [Audio+Overlays] Creating overlay layers")
+        print("📱 [Audio+Overlays] Video natural size: \(naturalSize.width)x\(naturalSize.height)")
+        print("📱 [Audio+Overlays] Target render size: \(targetSize.width)x\(targetSize.height)")
+        print("📱 [Audio+Overlays] Video scale: \(scale), offset: (\(xOffset), \(yOffset))")
         
-        // Create parent layer for the video
+        // Create parent layer for the video - use target size (1080x1920)
         let parentLayer = CALayer()
-        parentLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        parentLayer.frame = CGRect(origin: .zero, size: targetSize)
         
-        // Create video layer
+        // Create video layer - will be scaled and positioned by layerInstruction transform
         let videoLayer = CALayer()
-        videoLayer.frame = CGRect(origin: .zero, size: videoTrack.naturalSize)
+        videoLayer.frame = CGRect(origin: .zero, size: targetSize)
         parentLayer.addSublayer(videoLayer)
         
-        // Add image overlays
+        // Add image overlays (can be time-based) - use target size for calculations
         if let imageOverlays = imageOverlays {
             for (index, overlay) in imageOverlays.enumerated() {
-                if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                if let imageLayer = createImageOverlayLayer(overlay: overlay, videoSize: targetSize, videoDuration: finalDuration) {
                     parentLayer.addSublayer(imageLayer)
                     print("📱 [Audio+Overlays] Added image overlay \(index + 1)")
                 }
             }
         }
         
-        // Add text overlays
+        // Add text overlays (can be time-based) - use target size for calculations
         if let textOverlays = textOverlays {
             for (index, overlay) in textOverlays.enumerated() {
-                if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: videoTrack.naturalSize) {
+                if let textLayer = createTextOverlayLayer(overlay: overlay, videoSize: targetSize, videoDuration: finalDuration) {
                     parentLayer.addSublayer(textLayer)
                     print("📱 [Audio+Overlays] Added text overlay \(index + 1)")
+                }
+            }
+        }
+        
+        // Add time-based text overlays (with animations) - use target size for calculations
+        if let timeBasedTextOverlays = timeBasedTextOverlays {
+            for (index, overlay) in timeBasedTextOverlays.enumerated() {
+                if let textLayer = createTimeBasedTextOverlayLayer(overlay: overlay, videoSize: targetSize, videoDuration: finalDuration) {
+                    parentLayer.addSublayer(textLayer)
+                    print("📱 [Audio+Overlays] Added time-based text overlay \(index + 1)")
                 }
             }
         }

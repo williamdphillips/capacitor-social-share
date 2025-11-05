@@ -31,6 +31,31 @@ export interface TextOverlay {
     fontSize: number; // Font size in points
     color?: string; // Text color (hex or rgba), defaults to white
     fontFamily?: string; // Font family name, defaults to system font
+    fontWeight?: 'normal' | 'bold'; // Optional: Font weight, defaults to 'normal'
+    fontStyle?: 'normal' | 'italic'; // Optional: Font style, defaults to 'normal'
+    startTime?: number; // Optional: Start time in seconds (for time-based overlays)
+    endTime?: number; // Optional: End time in seconds (for time-based overlays)
+    shadowColor?: string; // Optional: Shadow color (hex or rgba), defaults to 'rgba(0,0,0,0.8)'
+    shadowOffsetX?: number; // Optional: Shadow offset X in points, defaults to 2
+    shadowOffsetY?: number; // Optional: Shadow offset Y in points, defaults to 2
+    shadowBlur?: number; // Optional: Shadow blur radius in points, defaults to 4
+}
+
+export interface TimeBasedTextOverlay {
+    text: string;
+    x: number; // X position as percentage (0-100)
+    y: number; // Y position as percentage (0-100)
+    fontSize: number; // Font size in points
+    color?: string; // Text color (hex or rgba), defaults to white
+    fontFamily?: string; // Font family name, defaults to system font
+    fontWeight?: 'normal' | 'bold'; // Optional: Font weight, defaults to 'normal'
+    fontStyle?: 'normal' | 'italic'; // Optional: Font style, defaults to 'normal'
+    startTime: number; // Start time in seconds (required for time-based overlays)
+    endTime: number; // End time in seconds (required for time-based overlays)
+    shadowColor?: string; // Optional: Shadow color (hex or rgba), defaults to 'rgba(0,0,0,0.8)'
+    shadowOffsetX?: number; // Optional: Shadow offset X in points, defaults to 2
+    shadowOffsetY?: number; // Optional: Shadow offset Y in points, defaults to 2
+    shadowBlur?: number; // Optional: Shadow blur radius in points, defaults to 4
 }
 
 export interface ImageOverlay {
@@ -40,6 +65,10 @@ export interface ImageOverlay {
     y: number; // Y position as percentage (0-100)
     width: number; // Width as percentage (0-100)
     height: number; // Height as percentage (0-100)
+    startTime?: number; // Optional: Start time in seconds (for time-based overlays)
+    endTime?: number; // Optional: End time in seconds (for time-based overlays)
+    noInvertY?: boolean; // Optional: If true, skip Y coordinate inversion (for watermarks that send bottom position directly)
+    cornerRadius?: number; // Optional: Corner radius in pixels (for rounded corners, e.g., cover art)
 }
 
 export interface InstagramShareOptions {
@@ -58,9 +87,11 @@ export interface InstagramShareOptions {
     backgroundColor?: string; // Optional: Background color (used if no imagePath/imageData provided)
     startTime?: number; // Optional: Start time in seconds for the audio (defaults to 0)
     duration?: number; // Optional: Duration in seconds for the video (if not specified, uses remaining audio duration)
+    videoStartTime?: number; // Optional: Start time in seconds for the video background (defaults to 0, only used when videoPath is provided)
     saveToDevice?: boolean; // Optional: Save created content to device before sharing (default: false)
     textOverlays?: TextOverlay[]; // Optional: Array of text overlays to add to the video/image
     imageOverlays?: ImageOverlay[]; // Optional: Array of image overlays to add to the video/image
+    timeBasedTextOverlays?: TimeBasedTextOverlay[]; // Optional: Array of time-based text overlays that appear/disappear at specific times
 }
 
 export interface FacebookShareOptions {

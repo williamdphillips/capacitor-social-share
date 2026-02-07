@@ -752,55 +752,95 @@ public class SocialShare: CAPPlugin {
         }
     }
 
-    // Save video to Photos and then open Instagram
+    // Save video to Photos (optional) and always present share sheet so user can pick Instagram etc.
+    // We never use instagram://library?AssetPath= for video – Instagram can't read app sandbox and shows wrong video.
     private func saveVideoToPhotosAndOpenInstagram(videoURL: URL, call: CAPPluginCall) {
-        print("📱 [SocialShare] Requesting Photos authorization for video saving")
+        print("🔥 [SocialShare] SHARE SHEET PATH: Presenting share sheet with video (path: \(videoURL.path))")
 
+        // Present share sheet immediately so it always appears; user picks Instagram or other app.
+        presentShareSheetWithVideo(videoURL: videoURL, call: call)
+
+        // Save to Photos in background so video is in the library (non-blocking).
         PHPhotoLibrary.requestAuthorization { status in
-            print("📱 [SocialShare] Photos authorization status: \(status.rawValue)")
-
-            DispatchQueue.main.async {
-                if #available(iOS 14, *) {
-                    if status == .authorized || status == .limited {
-                        print("📱 [SocialShare] Photos access granted, saving video to Photos")
-
-                        PHPhotoLibrary.shared().performChanges({
-                            PHAssetChangeRequest.creationRequestForAssetFromVideo(
-                                atFileURL: videoURL)
-                        }) { success, error in
-                            DispatchQueue.main.async {
-                                if success {
-                                    print("✅ [SocialShare] Video successfully saved to Photos")
-                                    print(
-                                        "📱 [SocialShare] Waiting 1 second for video processing...")
-
-                                    // Wait a moment for the video to be processed, then open Instagram with the video
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                        print("📱 [SocialShare] Opening Instagram with saved video")
-                                        self.openInstagramWithAsset(
-                                            assetPath: videoURL.path, call: call)
-                                    }
-                                } else {
-                                    let errorMsg = error?.localizedDescription ?? "Unknown error"
-                                    print(
-                                        "❌ [SocialShare] Failed to save video to Photos: \(errorMsg)"
-                                    )
-                                    call.reject("Failed to save video to Photos: \(errorMsg)")
-                                }
-                            }
-                        }
-                    } else {
-                        print("❌ [SocialShare] Photos access denied")
-                        call.reject(
-                            "Photos access denied. Please enable Photos access in Settings to save content before sharing."
-                        )
-                    }
-                } else {
-                    print("❌ [SocialShare] iOS version too old for Photos saving")
-                    call.reject("Saving to Photos requires iOS 14 or later")
-                }
+            guard status == .authorized || status == .limited else { return }
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
+            }) { success, _ in
+                if success { print("✅ [SocialShare] Video saved to Photos") }
             }
         }
+    }
+
+    // Present share sheet with video - bypasses instagram://library sandbox limitation.
+    // Do NOT use instagram://library?AssetPath= for our Documents path: Instagram cannot read
+    // app sandbox, so it would show camera roll and the wrong (e.g. older) video can appear.
+    private func presentShareSheetWithVideo(videoURL: URL, call: CAPPluginCall) {
+        guard FileManager.default.fileExists(atPath: videoURL.path) else {
+            call.reject("Video file not found at path")
+            return
+        }
+        // Copy to a unique temp file so the share sheet gets exactly this video (no time-based
+        // or directory-scan confusion with other instagram_video_* files).
+        let uniqueName = "share_video_\(UUID().uuidString).mp4"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(uniqueName)
+        do {
+            if FileManager.default.fileExists(atPath: tempURL.path) {
+                try FileManager.default.removeItem(at: tempURL)
+            }
+            try FileManager.default.copyItem(at: videoURL, to: tempURL)
+            print("📱 [SocialShare] Share sheet using unique video copy: \(tempURL.path)")
+        } catch {
+            print("⚠️ [SocialShare] Copy to temp failed, using original URL: \(error.localizedDescription)")
+            // Fallback to original URL
+        }
+        let urlForSheet = FileManager.default.fileExists(atPath: tempURL.path) ? tempURL : videoURL
+        DispatchQueue.main.async {
+            var presenter: UIViewController?
+            if let bridgeVC = self.bridge?.viewController {
+                presenter = bridgeVC
+                while let presented = presenter?.presentedViewController { presenter = presented }
+            }
+            if presenter == nil {
+                presenter = self.topViewControllerForShareSheet()
+            }
+            guard let presenter = presenter else {
+                print("❌ [SocialShare] No view controller available for share sheet (bridge and keyWindow both nil)")
+                call.reject("No view controller available to present share sheet")
+                return
+            }
+            print("📱 [SocialShare] Presenting UIActivityViewController (share sheet) on presenter: \(type(of: presenter))")
+            let activityVC = UIActivityViewController(activityItems: [urlForSheet], applicationActivities: nil)
+            if let popover = activityVC.popoverPresentationController {
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+            activityVC.completionWithItemsHandler = { activityType, completed, _, error in
+                if let error = error {
+                    call.reject("Share failed: \(error.localizedDescription)")
+                } else if completed {
+                    call.resolve(["status": "shared", "method": "share_sheet", "activityType": activityType?.rawValue ?? "unknown"])
+                } else {
+                    call.resolve(["status": "cancelled", "method": "share_sheet"])
+                }
+            }
+            presenter.present(activityVC, animated: true, completion: nil)
+        }
+    }
+
+    private func topViewControllerForShareSheet() -> UIViewController? {
+        let keyWindow: UIWindow?
+        if #available(iOS 13.0, *) {
+            keyWindow = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }
+                .first { $0.isKeyWindow }
+        } else {
+            keyWindow = UIApplication.shared.windows.first { $0.isKeyWindow }
+        }
+        guard var vc = keyWindow?.rootViewController else { return nil }
+        while let presented = vc.presentedViewController { vc = presented }
+        return vc
     }
 
     // Direct Instagram video sharing with temporary file (when saveToDevice is false)
@@ -808,8 +848,10 @@ public class SocialShare: CAPPlugin {
         print("📱 [SocialShare] Preparing direct Instagram video sharing")
         print("📱 [SocialShare] Video path: \(videoURL.path)")
 
-        // Instagram URL scheme that opens native sharing interface
-        guard let urlScheme = URL(string: "instagram://library?AssetPath=\(videoURL.path)") else {
+        // Use file:// URL and encode for Instagram - ensures Instagram receives the correct file
+        let fileURLString = "file://\(videoURL.path)"
+        guard let encodedPath = fileURLString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let urlScheme = URL(string: "instagram://library?AssetPath=\(encodedPath)") else {
             print("❌ [SocialShare] Invalid URL scheme for Instagram video sharing")
             call.reject("Invalid URL scheme for Instagram video sharing.")
             return
@@ -935,13 +977,29 @@ public class SocialShare: CAPPlugin {
         }
     }
 
-    // Open Instagram with specific asset path (the original INSTAGRAM_POST behavior)
+    // Open Instagram with specific asset path (the original INSTAGRAM_POST behavior).
+    // For video files we must use the share sheet instead: instagram://library?AssetPath= cannot
+    // read app sandbox, so Instagram would show camera roll and the wrong video can appear.
     private func openInstagramWithAsset(assetPath: String, call: CAPPluginCall) {
         print("📱 [SocialShare] Preparing to open Instagram with specific asset")
         print("📱 [SocialShare] Asset path: \(assetPath)")
 
-        // Instagram URL scheme that opens native sharing interface with specific asset
-        guard let urlScheme = URL(string: "instagram://library?AssetPath=\(assetPath)") else {
+        let pathLower = assetPath.lowercased()
+        let isVideo = pathLower.contains("instagram_video") || pathLower.hasSuffix(".mp4") || pathLower.hasSuffix(".mov")
+        if isVideo {
+            let resolvedPath = assetPath.hasPrefix("file://") ? String(assetPath.dropFirst(7)) : assetPath
+            let videoURL = URL(fileURLWithPath: resolvedPath)
+            if FileManager.default.fileExists(atPath: videoURL.path) {
+                print("📱 [SocialShare] Asset is video – using share sheet instead of AssetPath (sandbox-safe)")
+                presentShareSheetWithVideo(videoURL: videoURL, call: call)
+                return
+            }
+        }
+
+        // Use file:// URL and encode - for images only (video handled above)
+        let fileURLString = assetPath.hasPrefix("file://") ? assetPath : "file://\(assetPath)"
+        guard let encodedPath = fileURLString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let urlScheme = URL(string: "instagram://library?AssetPath=\(encodedPath)") else {
             print("❌ [SocialShare] Invalid URL scheme for Instagram asset sharing")
             call.reject("Invalid URL scheme for Instagram asset sharing.")
             return

@@ -1,77 +1,47 @@
 package com.soundsstudios.socialshare;
 
+import android.content.ContentValues;
 import android.content.Intent;
 import android.net.Uri;
-import android.content.ContentValues;
-import android.provider.MediaStore;
-import android.os.Environment;
 import android.os.Build;
-import android.content.pm.PackageManager;
-import android.content.FileProvider;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.MediaStore;
+import android.util.Base64;
 import android.util.Log;
 
-import com.getcapacitor.annotation.CapacitorPlugin;
+import androidx.core.content.FileProvider;
+
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
-import com.getcapacitor.Plugin;
-import com.getcapacitor.JSObject;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+import org.json.JSONArray;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.OutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import android.util.Base64;
+import java.io.OutputStream;
 
 @CapacitorPlugin(name = "SocialShare")
 public class SocialShare extends Plugin {
-
-    // Helper method to save base64 data to temporary file
-    private File saveBase64ToTempFile(String base64Data, String fileName, String extension) {
-        try {
-            byte[] decodedBytes = Base64.decode(base64Data, Base64.DEFAULT);
-            File tempDir = getContext().getCacheDir();
-            File tempFile = new File(tempDir, fileName + "." + extension);
-
-            FileOutputStream fos = new FileOutputStream(tempFile);
-            fos.write(decodedBytes);
-            fos.close();
-
-            return tempFile;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
-        }
-    }
-
-    // Helper method to get file from path or base64 data
-    private File getFileFromPathOrData(String filePath, String fileData, String defaultName, String extension) {
-        if (fileData != null && !fileData.isEmpty()) {
-            return saveBase64ToTempFile(fileData, defaultName, extension);
-        }
-
-        if (filePath != null && !filePath.isEmpty()) {
-            File file = new File(filePath);
-            if (file.exists()) {
-                return file;
-            }
-        }
-
-        return null;
-    }
+    private static final String TAG = "SocialShare";
+    private static final String INSTAGRAM_PACKAGE = "com.instagram.android";
 
     @PluginMethod
     public void share(PluginCall call) {
-        String platform = call.getString("platform");
-
+        String platform = call.getString("platform", "");
         switch (platform) {
             case "instagram-stories":
-                shareToInstagramStories(call, call.getString("imagePath"), call.getString("contentURL"),
-                        call.getBoolean("saveToDevice", true));
+                shareToInstagramStories(call);
                 break;
             case "instagram":
-                shareToInstagram(call, call.getString("imagePath"), call.getBoolean("saveToDevice", false));
+                shareToInstagram(call);
                 break;
             case "facebook":
                 shareToFacebook(call);
@@ -98,831 +68,373 @@ public class SocialShare extends Plugin {
                 shareToReddit(call);
                 break;
             default:
-                shareToDefaultPlatform(call);
+                shareWithSystemShare(call);
         }
     }
 
-    // Facebook sharing
-    private void shareToFacebook(PluginCall call) {
-        String title = call.getString("title", "");
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String hashtag = call.getString("hashtag", "");
-        String imagePath = call.getString("imagePath", "");
-        String imageData = call.getString("imageData", "");
-
-        String shareText = text;
-        if (!url.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : " ") + url;
-        }
-        if (!hashtag.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : " ") + hashtag;
-        }
-
-        // Get image file from path or base64 data
-        File imageFile = getFileFromPathOrData(imagePath, imageData, "facebook_image", "jpg");
-
-        // Try Facebook app first
-        Intent facebookIntent = new Intent(Intent.ACTION_SEND);
-        facebookIntent.setType("text/plain");
-        facebookIntent.setPackage("com.facebook.katana");
-        facebookIntent.putExtra(Intent.EXTRA_TEXT, shareText);
-
-        if (imageFile != null && imageFile.exists()) {
-            Uri imageUri = Uri.fromFile(imageFile);
-            facebookIntent.setType("image/*");
-            facebookIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-            grantUriPermission("com.facebook.katana", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        }
-
-        if (facebookIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(facebookIntent);
-            call.resolve();
-        } else {
-            // Fallback to generic share
-            shareWithSystemShare(shareText, url, imageFile != null ? imageFile.getAbsolutePath() : "", call);
-        }
-    }
-
-    // Twitter/X sharing
-    private void shareToTwitter(PluginCall call) {
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String imagePath = call.getString("imagePath", "");
-
-        String[] hashtags = call.getArray("hashtags") != null
-                ? call.getArray("hashtags").toList().toArray(new String[0])
-                : new String[0];
-        String via = call.getString("via", "");
-
-        String tweetText = text;
-        if (hashtags.length > 0) {
-            for (String hashtag : hashtags) {
-                tweetText += " #" + hashtag;
-            }
-        }
-        if (!via.isEmpty()) {
-            tweetText += " via @" + via;
-        }
-        if (!url.isEmpty()) {
-            tweetText += " " + url;
-        }
-
-        // Try Twitter app first
-        Intent twitterIntent = new Intent(Intent.ACTION_SEND);
-        twitterIntent.setType("text/plain");
-        twitterIntent.setPackage("com.twitter.android");
-        twitterIntent.putExtra(Intent.EXTRA_TEXT, tweetText);
-
-        if (!imagePath.isEmpty()) {
-            File imageFile = new File(imagePath);
-            if (imageFile.exists()) {
-                Uri imageUri = Uri.fromFile(imageFile);
-                twitterIntent.setType("image/*");
-                twitterIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-                grantUriPermission("com.twitter.android", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        }
-
-        if (twitterIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(twitterIntent);
-            call.resolve();
-        } else {
-            // Fallback to generic share
-            shareWithSystemShare(tweetText, url, imagePath, call);
-        }
-    }
-
-    // TikTok sharing
-    private void shareToTikTok(PluginCall call) {
-        String text = call.getString("text", "");
-        String[] hashtags = call.getArray("hashtags") != null
-                ? call.getArray("hashtags").toList().toArray(new String[0])
-                : new String[0];
-        String videoPath = call.getString("videoPath", "");
-        String imagePath = call.getString("imagePath", "");
-
-        String caption = text;
-        if (hashtags.length > 0) {
-            for (String hashtag : hashtags) {
-                caption += " #" + hashtag;
-            }
-        }
-
-        // Try TikTok app
-        Intent tiktokIntent = new Intent(Intent.ACTION_SEND);
-        tiktokIntent.setPackage("com.zhiliaoapp.musically");
-
-        if (!videoPath.isEmpty()) {
-            File videoFile = new File(videoPath);
-            if (videoFile.exists()) {
-                Uri videoUri = Uri.fromFile(videoFile);
-                tiktokIntent.setType("video/*");
-                tiktokIntent.putExtra(Intent.EXTRA_STREAM, videoUri);
-                grantUriPermission("com.zhiliaoapp.musically", videoUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        } else if (!imagePath.isEmpty()) {
-            File imageFile = new File(imagePath);
-            if (imageFile.exists()) {
-                Uri imageUri = Uri.fromFile(imageFile);
-                tiktokIntent.setType("image/*");
-                tiktokIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-                grantUriPermission("com.zhiliaoapp.musically", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        } else {
-            tiktokIntent.setType("text/plain");
-        }
-
-        tiktokIntent.putExtra(Intent.EXTRA_TEXT, caption);
-
-        if (tiktokIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(Intent.createChooser(tiktokIntent, "Share to TikTok"));
-            call.resolve();
-        } else {
-            call.reject("TikTok app is not installed");
-        }
-    }
-
-    // WhatsApp sharing
-    private void shareToWhatsApp(PluginCall call) {
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String phoneNumber = call.getString("phoneNumber", "");
-        String imagePath = call.getString("imagePath", "");
-
-        String message = text;
-        if (!url.isEmpty()) {
-            message += (message.isEmpty() ? "" : " ") + url;
-        }
-
-        Intent whatsappIntent = new Intent(Intent.ACTION_SEND);
-        whatsappIntent.setPackage("com.whatsapp");
-
-        if (!imagePath.isEmpty()) {
-            File imageFile = new File(imagePath);
-            if (imageFile.exists()) {
-                Uri imageUri = Uri.fromFile(imageFile);
-                whatsappIntent.setType("image/*");
-                whatsappIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-                grantUriPermission("com.whatsapp", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        } else {
-            whatsappIntent.setType("text/plain");
-        }
-
-        whatsappIntent.putExtra(Intent.EXTRA_TEXT, message);
-
-        if (!phoneNumber.isEmpty()) {
-            whatsappIntent.putExtra("jid", phoneNumber + "@s.whatsapp.net");
-        }
-
-        if (whatsappIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(whatsappIntent);
-            call.resolve();
-        } else {
-            // Fallback to web WhatsApp
-            shareWithSystemShare(message, url, imagePath, call);
-        }
-    }
-
-    // LinkedIn sharing
-    private void shareToLinkedIn(PluginCall call) {
-        String title = call.getString("title", "");
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String imagePath = call.getString("imagePath", "");
-
-        String shareText = title;
-        if (!text.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : "\n") + text;
-        }
-        if (!url.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : "\n") + url;
-        }
-
-        Intent linkedinIntent = new Intent(Intent.ACTION_SEND);
-        linkedinIntent.setType("text/plain");
-        linkedinIntent.setPackage("com.linkedin.android");
-        linkedinIntent.putExtra(Intent.EXTRA_TEXT, shareText);
-
-        if (!imagePath.isEmpty()) {
-            File imageFile = new File(imagePath);
-            if (imageFile.exists()) {
-                Uri imageUri = Uri.fromFile(imageFile);
-                linkedinIntent.setType("image/*");
-                linkedinIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-                grantUriPermission("com.linkedin.android", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        }
-
-        if (linkedinIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(linkedinIntent);
-            call.resolve();
-        } else {
-            shareWithSystemShare(shareText, url, imagePath, call);
-        }
-    }
-
-    // Snapchat sharing
-    private void shareToSnapchat(PluginCall call) {
-        String imagePath = call.getString("imagePath", "");
-        String videoPath = call.getString("videoPath", "");
-
-        Intent snapchatIntent = new Intent(Intent.ACTION_SEND);
-        snapchatIntent.setPackage("com.snapchat.android");
-
-        if (!videoPath.isEmpty()) {
-            File videoFile = new File(videoPath);
-            if (videoFile.exists()) {
-                Uri videoUri = Uri.fromFile(videoFile);
-                snapchatIntent.setType("video/*");
-                snapchatIntent.putExtra(Intent.EXTRA_STREAM, videoUri);
-                grantUriPermission("com.snapchat.android", videoUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        } else if (!imagePath.isEmpty()) {
-            File imageFile = new File(imagePath);
-            if (imageFile.exists()) {
-                Uri imageUri = Uri.fromFile(imageFile);
-                snapchatIntent.setType("image/*");
-                snapchatIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-                grantUriPermission("com.snapchat.android", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        }
-
-        if (snapchatIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(snapchatIntent);
-            call.resolve();
-        } else {
-            call.reject("Snapchat app is not installed");
-        }
-    }
-
-    // Telegram sharing
-    private void shareToTelegram(PluginCall call) {
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String imagePath = call.getString("imagePath", "");
-
-        String message = text;
-        if (!url.isEmpty()) {
-            message += (message.isEmpty() ? "" : "\n") + url;
-        }
-
-        Intent telegramIntent = new Intent(Intent.ACTION_SEND);
-        telegramIntent.setPackage("org.telegram.messenger");
-
-        if (!imagePath.isEmpty()) {
-            File imageFile = new File(imagePath);
-            if (imageFile.exists()) {
-                Uri imageUri = Uri.fromFile(imageFile);
-                telegramIntent.setType("image/*");
-                telegramIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-                grantUriPermission("org.telegram.messenger", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        } else {
-            telegramIntent.setType("text/plain");
-        }
-
-        telegramIntent.putExtra(Intent.EXTRA_TEXT, message);
-
-        if (telegramIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(telegramIntent);
-            call.resolve();
-        } else {
-            shareWithSystemShare(message, url, imagePath, call);
-        }
-    }
-
-    // Reddit sharing
-    private void shareToReddit(PluginCall call) {
-        String title = call.getString("title", "");
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String subreddit = call.getString("subreddit", "");
-
-        String shareText = title;
-        if (!text.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : "\n") + text;
-        }
-        if (!url.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : "\n") + url;
-        }
-        if (!subreddit.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : "\n") + "r/" + subreddit;
-        }
-
-        Intent redditIntent = new Intent(Intent.ACTION_SEND);
-        redditIntent.setType("text/plain");
-        redditIntent.setPackage("com.reddit.frontpage");
-        redditIntent.putExtra(Intent.EXTRA_TEXT, shareText);
-
-        if (redditIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(redditIntent);
-            call.resolve();
-        } else {
-            shareWithSystemShare(shareText, url, "", call);
-        }
-    }
-
-    // Helper method for system share sheet
-    private void shareWithSystemShare(String text, String url, String imagePath, PluginCall call) {
-        Intent shareIntent = new Intent(Intent.ACTION_SEND);
-
-        if (!imagePath.isEmpty()) {
-            File imageFile = new File(imagePath);
-            if (imageFile.exists()) {
-                Uri imageUri = Uri.fromFile(imageFile);
-                shareIntent.setType("image/*");
-                shareIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-                grantUriPermission("*", imageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        } else {
-            shareIntent.setType("text/plain");
-        }
-
-        shareIntent.putExtra(Intent.EXTRA_TEXT, text);
-
-        if (shareIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(Intent.createChooser(shareIntent, "Share via"));
-            call.resolve();
-        } else {
-            call.reject("No app available to handle sharing");
-        }
-    }
-
-    // Helper method for default platform sharing
-    private void shareToDefaultPlatform(PluginCall call) {
-        String title = call.getString("title", "");
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String imagePath = call.getString("imagePath", "");
-
-        String shareText = text;
-        if (!url.isEmpty()) {
-            shareText += (shareText.isEmpty() ? "" : " ") + url;
-        }
-
-        shareWithSystemShare(shareText, url, imagePath, call);
-    }
-
-    // Instagram sharing with native picker (Story/Reels/Messages/Feed)
-    private void shareToInstagram(PluginCall call, String imagePath, Boolean saveToDevice) {
-        Log.d("SocialShare", "📱 Starting Instagram sharing process");
-
+    private void shareToInstagram(PluginCall call) {
+        Log.d(TAG, "Starting Instagram sharing");
+        boolean saveToDevice = Boolean.TRUE.equals(call.getBoolean("saveToDevice", false));
+        String imagePath = call.getString("imagePath");
         String imageData = call.getString("imageData");
+        String videoPath = call.getString("videoPath");
+        String videoData = call.getString("videoData");
         String audioPath = call.getString("audioPath");
         String audioData = call.getString("audioData");
-        String backgroundColor = call.getString("backgroundColor", "#000000");
-        Double startTime = call.getDouble("startTime", 0.0);
+        double startTime = call.getDouble("startTime", 0.0);
+        Double duration = call.getDouble("duration");
+        JSONArray textOverlays = toJsonArray(call.getArray("textOverlays"));
+        JSONArray imageOverlays = toJsonArray(call.getArray("imageOverlays"));
+        JSONArray timeBasedTextOverlays = toJsonArray(call.getArray("timeBasedTextOverlays"));
 
-        Log.d("SocialShare", "   - imagePath: " + (imagePath != null ? imagePath : "null"));
-        Log.d("SocialShare", "   - imageData: " + (imageData != null ? "provided" : "null"));
-        Log.d("SocialShare", "   - audioPath: " + (audioPath != null ? audioPath : "null"));
-        Log.d("SocialShare", "   - audioData: " + (audioData != null ? "provided" : "null"));
-        Log.d("SocialShare", "   - backgroundColor: " + backgroundColor);
-        Log.d("SocialShare", "   - startTime: " + startTime);
-        Log.d("SocialShare", "   - saveToDevice: " + saveToDevice);
+        File imageFile = resolveFile(imagePath, imageData, "jpg");
+        File videoFile = resolveFile(videoPath, videoData, "mp4");
+        File audioFile = resolveFile(audioPath, audioData, "mp3");
 
-        // Get file paths from paths or base64 data
-        String finalImagePath = getFilePath(imagePath, imageData, "jpg");
-        String finalAudioPath = getFilePath(audioPath, audioData, "mp3");
+        Log.d(TAG, "image=" + (imageFile != null) + " video=" + (videoFile != null) + " audio=" + (audioFile != null));
 
-        Log.d("SocialShare", "📱 File path resolution:");
-        Log.d("SocialShare", "   - finalImagePath: " + (finalImagePath != null ? finalImagePath : "null"));
-        Log.d("SocialShare", "   - finalAudioPath: " + (finalAudioPath != null ? finalAudioPath : "null"));
-
-        // If both image and audio are provided, create a video
-        if (finalImagePath != null && finalAudioPath != null) {
-            File imageFile = new File(finalImagePath);
-            File audioFile = new File(finalAudioPath);
-
-            if (imageFile.exists() && audioFile.exists()) {
-                Log.d("SocialShare", "📱 Creating video from image + audio");
-                createVideoFromImageAndAudio(imageFile, audioFile, backgroundColor, startTime, saveToDevice, call);
-                return;
-            }
+        // Image + audio → compose story video (primary Wave path)
+        if (imageFile != null && audioFile != null) {
+            ShareUtils.createVideoFromImageAndAudioAsync(
+                    getContext(),
+                    imageFile,
+                    audioFile,
+                    startTime,
+                    duration,
+                    textOverlays,
+                    imageOverlays,
+                    timeBasedTextOverlays,
+                    (success, outputFile, error) -> new Handler(Looper.getMainLooper()).post(() -> {
+                        if (!success || outputFile == null) {
+                            call.reject(error != null ? error : "Failed to create Instagram video");
+                            return;
+                        }
+                        if (saveToDevice) {
+                            saveVideoToGalleryAndOpenInstagram(outputFile, call);
+                        } else {
+                            shareVideoToInstagram(outputFile, call);
+                        }
+                    })
+            );
+            return;
         }
 
-        // Handle image-only sharing
-        if (finalImagePath != null) {
-            File imageFile = new File(finalImagePath);
-            Log.d("SocialShare", "📱 Checking image file: " + finalImagePath);
-            Log.d("SocialShare", "   - File exists: " + imageFile.exists());
-            Log.d("SocialShare", "   - File size: " + imageFile.length() + " bytes");
-
-            if (!imageFile.exists()) {
-                Log.e("SocialShare", "❌ Image file does not exist: " + finalImagePath);
-                call.reject("Image file does not exist");
-                return;
-            }
-
+        if (videoFile != null) {
             if (saveToDevice) {
-                Log.d("SocialShare", "📱 Saving image to Gallery and opening Instagram");
-                saveImageToGalleryAndShare(imageFile, call, "instagram");
+                saveVideoToGalleryAndOpenInstagram(videoFile, call);
             } else {
-                Log.d("SocialShare", "📱 Sharing image directly to Instagram");
-                shareImageToInstagramDirectly(imageFile, call);
+                shareVideoToInstagram(videoFile, call);
             }
+            return;
+        }
+
+        if (imageFile != null) {
+            if (saveToDevice) {
+                saveImageToGalleryAndOpenInstagram(imageFile, call);
+            } else {
+                shareImageToInstagram(imageFile, call);
+            }
+            return;
+        }
+
+        call.reject("Please provide imagePath/imageData and/or audioPath/audioData for Instagram sharing");
+    }
+
+    private void shareToInstagramStories(PluginCall call) {
+        String imagePath = call.getString("imagePath");
+        String videoPath = call.getString("videoPath");
+        String contentURL = call.getString("contentURL");
+        boolean saveToDevice = Boolean.TRUE.equals(call.getBoolean("saveToDevice", true));
+
+        File videoFile = ShareUtils.resolveLocalFile(videoPath);
+        if (videoFile != null) {
+            if (saveToDevice) {
+                saveVideoToGalleryAndOpenInstagram(videoFile, call);
+            } else {
+                shareToInstagramStoriesIntent(videoFile, "video/*", contentURL, call);
+            }
+            return;
+        }
+
+        File imageFile = ShareUtils.resolveLocalFile(imagePath);
+        if (imageFile == null) {
+            call.reject("Invalid imagePath/videoPath for Instagram Stories");
+            return;
+        }
+        if (saveToDevice) {
+            saveImageToGalleryAndOpenInstagram(imageFile, call);
         } else {
-            Log.e("SocialShare", "❌ Invalid parameters for Instagram sharing");
-            call.reject(
-                    "Please provide either imagePath/imageData (for image sharing) or both image and audio (for video creation)");
+            shareToInstagramStoriesIntent(imageFile, "image/*", contentURL, call);
         }
     }
 
-    private void shareImageToInstagramDirectly(File imageFile, PluginCall call) {
-        Log.d("SocialShare", "📱 Preparing direct Instagram image sharing");
-        Log.d("SocialShare", "   - Image file: " + imageFile.getAbsolutePath());
-
-        Uri imageUri = Uri.fromFile(imageFile);
-        Log.d("SocialShare", "   - Image URI: " + imageUri.toString());
-
-        Intent shareIntent = new Intent(Intent.ACTION_SEND);
-        shareIntent.setType("image/*");
-        shareIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
-        shareIntent.setPackage("com.instagram.android");
-
-        Log.d("SocialShare", "📱 Granting URI permission to Instagram");
-        grantUriPermission(
-                "com.instagram.android",
-                imageUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-        if (shareIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            Log.d("SocialShare", "✅ Opening Instagram with native sharing interface");
-            getContext().startActivity(shareIntent);
-            call.resolve(new JSObject().put("status", "shared")
-                    .put("method", "instagram_intent")
-                    .put("note", "Instagram sharing interface opened with native picker"));
+    private void shareToInstagramStoriesIntent(File file, String mime, String contentURL, PluginCall call) {
+        Uri uri = getShareableUri(file);
+        Intent intent = new Intent("com.instagram.share.ADD_TO_STORY");
+        intent.setType(mime);
+        intent.putExtra("interactive_asset_uri", uri);
+        if (contentURL != null && !contentURL.isEmpty()) {
+            intent.putExtra("content_url", contentURL);
+        }
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        getContext().grantUriPermission(INSTAGRAM_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+            getActivity().startActivity(intent);
+            call.resolve(new JSObject().put("status", "shared").put("method", "instagram_stories"));
         } else {
-            Log.e("SocialShare", "❌ Instagram is not installed");
-            call.reject("Instagram is not installed.");
+            call.reject("Instagram Stories is not available");
         }
     }
 
-    private void saveImageToGalleryAndShare(File imageFile, PluginCall call, String shareType) {
-        Log.d("SocialShare", "📱 Saving image to Gallery");
-        Log.d("SocialShare", "   - Image file: " + imageFile.getAbsolutePath());
-        Log.d("SocialShare", "   - Share type: " + shareType);
-
-        try {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, imageFile.getName());
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
-                Log.d("SocialShare", "📱 Using scoped storage (Android Q+)");
-            } else {
-                Log.d("SocialShare", "📱 Using legacy storage");
-            }
-
-            Log.d("SocialShare", "📱 Inserting image into MediaStore");
-            Uri imageUri = getContext().getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    values);
-
-            if (imageUri != null) {
-                Log.d("SocialShare", "✅ MediaStore URI created: " + imageUri.toString());
-
-                OutputStream outputStream = getContext().getContentResolver().openOutputStream(imageUri);
-                FileInputStream inputStream = new FileInputStream(imageFile);
-
-                Log.d("SocialShare", "📱 Copying image data to Gallery");
-                byte[] buffer = new byte[1024];
-                int length;
-                long totalBytes = 0;
-                while ((length = inputStream.read(buffer)) > 0) {
-                    outputStream.write(buffer, 0, length);
-                    totalBytes += length;
-                }
-
-                outputStream.close();
-                inputStream.close();
-
-                Log.d("SocialShare", "✅ Image saved to Gallery (" + totalBytes + " bytes)");
-                Log.d("SocialShare", "📱 Waiting 500ms for image processing...");
-
-                // Wait a moment for the image to be processed, then open Instagram app
-                new android.os.Handler().postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        Log.d("SocialShare", "📱 Opening Instagram app");
-                        openInstagramApp(call);
-                    }
-                }, 500); // 500ms delay
-            } else {
-                Log.e("SocialShare", "❌ Failed to create MediaStore URI");
-                call.reject("Failed to save image to gallery");
-            }
-        } catch (IOException e) {
-            Log.e("SocialShare", "❌ Error saving image to gallery: " + e.getMessage());
-            call.reject("Error saving image to gallery: " + e.getMessage());
-        }
-    }
-
-    // Open Instagram app with sharing interface (when saveToDevice is true)
-    private void openInstagramApp(PluginCall call) {
-        Log.d("SocialShare", "📱 Preparing to open Instagram with sharing interface");
-
-        // Try to open Instagram's main app which will show the camera/create post
-        // interface
-        Intent instagramIntent = getContext().getPackageManager().getLaunchIntentForPackage("com.instagram.android");
-
-        if (instagramIntent != null) {
-            // Add flags to ensure we get the main Instagram interface
-            instagramIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            instagramIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
-
-            Log.d("SocialShare", "✅ Opening Instagram app");
-            getContext().startActivity(instagramIntent);
-            call.resolve(new JSObject().put("status", "shared")
-                    .put("method", "instagram_app_open")
-                    .put("note",
-                            "Instagram opened. Content saved to gallery - tap + to create post and select your content."));
+    private void shareImageToInstagram(File imageFile, PluginCall call) {
+        Uri uri = getShareableUri(imageFile);
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("image/*");
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.setPackage(INSTAGRAM_PACKAGE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        getContext().grantUriPermission(INSTAGRAM_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+            getActivity().startActivity(intent);
+            call.resolve(new JSObject().put("status", "shared").put("method", "instagram_intent"));
         } else {
-            Log.e("SocialShare", "❌ Instagram is not installed");
             call.reject("Instagram is not installed");
         }
     }
 
-    private void shareToInstagramStories(PluginCall call, String imagePath, String videoPath, String contentURL,
-            Boolean saveToDevice) {
-        // Handle video sharing first
-        if (videoPath != null && !videoPath.isEmpty()) {
-            File videoFile = new File(videoPath);
-            if (videoFile.exists()) {
-                if (saveToDevice) {
-                    saveVideoToGalleryAndShare(videoFile, call, "stories");
-                } else {
-                    shareVideoToInstagramStories(videoFile, contentURL, call);
-                }
+    private void shareVideoToInstagram(File videoFile, PluginCall call) {
+        Uri uri = getShareableUri(videoFile);
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("video/*");
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.setPackage(INSTAGRAM_PACKAGE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        getContext().grantUriPermission(INSTAGRAM_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+            getActivity().startActivity(intent);
+            call.resolve(new JSObject().put("status", "shared").put("method", "instagram_intent"));
+        } else {
+            call.reject("Instagram is not installed");
+        }
+    }
+
+    private void saveImageToGalleryAndOpenInstagram(File imageFile, PluginCall call) {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, imageFile.getName());
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
+            }
+            Uri uri = getContext().getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) {
+                call.reject("Failed to save image to gallery");
                 return;
             }
-        }
-
-        // Handle image sharing
-        if (imagePath == null || imagePath.isEmpty()) {
-            call.reject("Invalid imagePath for Instagram Stories");
-            return;
-        }
-
-        File imageFile = new File(imagePath);
-        if (!imageFile.exists()) {
-            call.reject("Image file does not exist");
-            return;
-        }
-
-        if (saveToDevice) {
-            saveImageToGalleryAndShare(imageFile, call, "stories");
-        } else {
-            shareImageToInstagramStories(imageFile, contentURL, call);
+            copyFileToUri(imageFile, uri);
+            new Handler(Looper.getMainLooper()).postDelayed(() -> openInstagramApp(call), 500);
+        } catch (IOException e) {
+            call.reject("Error saving image: " + e.getMessage());
         }
     }
 
-    private void shareVideoToInstagramStories(File videoFile, String contentURL, PluginCall call) {
-        Uri videoUri = Uri.fromFile(videoFile);
-
-        Intent shareIntent = new Intent("com.instagram.share.ADD_TO_STORY");
-        shareIntent.setType("video/*");
-        shareIntent.putExtra("interactive_asset_uri", videoUri);
-
-        if (contentURL != null && !contentURL.isEmpty()) {
-            shareIntent.putExtra("content_url", contentURL);
-        }
-
-        grantUriPermission(
-                "com.instagram.android",
-                videoUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-        if (shareIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(shareIntent);
-            call.resolve();
-        } else {
-            call.reject("Instagram Stories is not installed.");
-        }
-    }
-
-    private void shareImageToInstagramStories(File imageFile, String contentURL, PluginCall call) {
-        Uri imageUri = Uri.fromFile(imageFile);
-
-        Intent shareIntent = new Intent("com.instagram.share.ADD_TO_STORY");
-        shareIntent.setType("image/*");
-        shareIntent.putExtra("interactive_asset_uri", imageUri);
-
-        if (contentURL != null && !contentURL.isEmpty()) {
-            shareIntent.putExtra("content_url", contentURL);
-        }
-
-        grantUriPermission(
-                "com.instagram.android",
-                imageUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-        if (shareIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            getContext().startActivity(shareIntent);
-            call.resolve();
-        } else {
-            call.reject("Instagram Stories is not installed.");
-        }
-    }
-
-    // Generic method to save video to gallery and open Instagram
-    private void saveVideoToGalleryAndShare(File videoFile, PluginCall call, String shareType) {
-        Log.d("SocialShare", "📱 Saving video to Gallery");
-        Log.d("SocialShare", "   - Video file: " + videoFile.getAbsolutePath());
-        Log.d("SocialShare", "   - Share type: " + shareType);
-        Log.d("SocialShare", "   - File size: " + videoFile.length() + " bytes");
-
+    private void saveVideoToGalleryAndOpenInstagram(File videoFile, PluginCall call) {
         try {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Video.Media.DISPLAY_NAME, videoFile.getName());
             values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
-
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES);
-                Log.d("SocialShare", "📱 Using scoped storage (Android Q+) - Movies directory");
-            } else {
-                Log.d("SocialShare", "📱 Using legacy storage");
             }
-
-            Log.d("SocialShare", "📱 Inserting video into MediaStore");
-            Uri videoUri = getContext().getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                    values);
-
-            if (videoUri != null) {
-                Log.d("SocialShare", "✅ MediaStore URI created: " + videoUri.toString());
-
-                OutputStream outputStream = getContext().getContentResolver().openOutputStream(videoUri);
-                FileInputStream inputStream = new FileInputStream(videoFile);
-
-                Log.d("SocialShare", "📱 Copying video data to Gallery");
-                byte[] buffer = new byte[1024];
-                int length;
-                long totalBytes = 0;
-                while ((length = inputStream.read(buffer)) > 0) {
-                    outputStream.write(buffer, 0, length);
-                    totalBytes += length;
-                }
-
-                outputStream.close();
-                inputStream.close();
-
-                Log.d("SocialShare", "✅ Video saved to Gallery (" + totalBytes + " bytes)");
-                Log.d("SocialShare", "📱 Waiting 1000ms for video processing...");
-
-                // Wait a moment for the video to be processed, then open Instagram app
-                new android.os.Handler().postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        Log.d("SocialShare", "📱 Opening Instagram app after video save");
-                        openInstagramApp(call);
-                    }
-                }, 1000); // 1000ms delay for video processing
-            } else {
-                Log.e("SocialShare", "❌ Failed to create MediaStore URI for video");
+            Uri uri = getContext().getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) {
                 call.reject("Failed to save video to gallery");
+                return;
             }
+            copyFileToUri(videoFile, uri);
+            new Handler(Looper.getMainLooper()).postDelayed(() -> openInstagramApp(call), 1000);
         } catch (IOException e) {
-            Log.e("SocialShare", "❌ Error saving video to gallery: " + e.getMessage());
-            call.reject("Error saving video to gallery: " + e.getMessage());
+            call.reject("Error saving video: " + e.getMessage());
         }
     }
 
-    // Helper method to get file path from path or base64 data
-    private String getFilePath(String path, String data, String extension) {
+    private void openInstagramApp(PluginCall call) {
+        Intent launch = getContext().getPackageManager().getLaunchIntentForPackage(INSTAGRAM_PACKAGE);
+        if (launch != null) {
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            getContext().startActivity(launch);
+            call.resolve(new JSObject()
+                    .put("status", "shared")
+                    .put("method", "instagram_app_open")
+                    .put("note", "Content saved to gallery — open Instagram and select it to share."));
+        } else {
+            call.reject("Instagram is not installed");
+        }
+    }
+
+    private void shareToFacebook(PluginCall call) {
+        shareTextOrMedia(call, "com.facebook.katana", "text/plain");
+    }
+
+    private void shareToTwitter(PluginCall call) {
+        shareTextOrMedia(call, "com.twitter.android", "text/plain");
+    }
+
+    private void shareToTikTok(PluginCall call) {
+        File video = resolveFile(call.getString("videoPath"), call.getString("videoData"), "mp4");
+        File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
+        File media = video != null ? video : image;
+        if (media == null) {
+            call.reject("TikTok sharing requires videoPath or imagePath");
+            return;
+        }
+        Uri uri = getShareableUri(media);
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType(video != null ? "video/*" : "image/*");
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.setPackage("com.zhiliaoapp.musically");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+            getActivity().startActivity(intent);
+            call.resolve();
+        } else {
+            shareWithSystemShare(call);
+        }
+    }
+
+    private void shareToWhatsApp(PluginCall call) {
+        shareTextOrMedia(call, "com.whatsapp", "text/plain");
+    }
+
+    private void shareToLinkedIn(PluginCall call) {
+        shareTextOrMedia(call, "com.linkedin.android", "text/plain");
+    }
+
+    private void shareToSnapchat(PluginCall call) {
+        shareTextOrMedia(call, "com.snapchat.android", "image/*");
+    }
+
+    private void shareToTelegram(PluginCall call) {
+        shareTextOrMedia(call, "org.telegram.messenger", "text/plain");
+    }
+
+    private void shareToReddit(PluginCall call) {
+        shareTextOrMedia(call, "com.reddit.frontpage", "text/plain");
+    }
+
+    private void shareTextOrMedia(PluginCall call, String packageName, String defaultType) {
+        String text = call.getString("text", "");
+        String url = call.getString("url", "");
+        String shareText = text;
+        if (url != null && !url.isEmpty()) {
+            shareText = shareText.isEmpty() ? url : shareText + " " + url;
+        }
+        File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setPackage(packageName);
+        if (image != null) {
+            Uri uri = getShareableUri(image);
+            intent.setType("image/*");
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            getContext().grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } else {
+            intent.setType(defaultType);
+        }
+        if (!shareText.isEmpty()) {
+            intent.putExtra(Intent.EXTRA_TEXT, shareText);
+        }
+        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+            getActivity().startActivity(intent);
+            call.resolve();
+        } else {
+            shareWithSystemShare(call);
+        }
+    }
+
+    private void shareWithSystemShare(PluginCall call) {
+        String text = call.getString("text", "");
+        String url = call.getString("url", "");
+        String shareText = text;
+        if (url != null && !url.isEmpty()) {
+            shareText = shareText.isEmpty() ? url : shareText + " " + url;
+        }
+        File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
+        File video = resolveFile(call.getString("videoPath"), call.getString("videoData"), "mp4");
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        if (video != null) {
+            Uri uri = getShareableUri(video);
+            intent.setType("video/*");
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } else if (image != null) {
+            Uri uri = getShareableUri(image);
+            intent.setType("image/*");
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } else {
+            intent.setType("text/plain");
+        }
+        if (!shareText.isEmpty()) {
+            intent.putExtra(Intent.EXTRA_TEXT, shareText);
+        }
+        getActivity().startActivity(Intent.createChooser(intent, "Share"));
+        call.resolve();
+    }
+
+    private Uri getShareableUri(File file) {
+        String authority = getContext().getPackageName() + ".fileprovider";
+        return FileProvider.getUriForFile(getContext(), authority, file);
+    }
+
+    private void copyFileToUri(File file, Uri uri) throws IOException {
+        try (OutputStream out = getContext().getContentResolver().openOutputStream(uri);
+             FileInputStream in = new FileInputStream(file)) {
+            if (out == null) {
+                throw new IOException("Unable to open output stream");
+            }
+            byte[] buffer = new byte[8192];
+            int length;
+            while ((length = in.read(buffer)) > 0) {
+                out.write(buffer, 0, length);
+            }
+        }
+    }
+
+    private File resolveFile(String path, String data, String extension) {
         if (data != null && !data.isEmpty()) {
             return saveBase64ToTempFile(data, extension);
         }
-
-        if (path != null && !path.isEmpty()) {
-            return path;
-        }
-
-        return null;
+        return ShareUtils.resolveLocalFile(path);
     }
 
-    // Helper method to save base64 data to temporary file
-    private String saveBase64ToTempFile(String base64Data, String extension) {
+    private File saveBase64ToTempFile(String base64Data, String extension) {
         try {
-            // Remove data URL prefix if present
-            String cleanBase64 = base64Data;
-            if (base64Data.contains(",")) {
-                cleanBase64 = base64Data.split(",")[1];
-            }
-
-            byte[] decodedBytes = android.util.Base64.decode(cleanBase64, android.util.Base64.DEFAULT);
-
+            String clean = base64Data.contains(",") ? base64Data.substring(base64Data.indexOf(',') + 1) : base64Data;
+            byte[] decoded = Base64.decode(clean, Base64.DEFAULT);
             File tempDir = new File(getContext().getCacheDir(), "temp_files");
-            if (!tempDir.exists()) {
-                tempDir.mkdirs();
+            if (!tempDir.exists() && !tempDir.mkdirs()) {
+                return null;
             }
-
-            String fileName = "temp_" + System.currentTimeMillis() + "." + extension;
-            File tempFile = new File(tempDir, fileName);
-
-            FileOutputStream fos = new FileOutputStream(tempFile);
-            fos.write(decodedBytes);
-            fos.close();
-
-            Log.d("SocialShare", "✅ Base64 data saved to temp file: " + tempFile.getAbsolutePath());
-            return tempFile.getAbsolutePath();
+            File tempFile = new File(tempDir, "temp_" + System.currentTimeMillis() + "." + extension);
+            try (FileOutputStream fos = new FileOutputStream(tempFile)) {
+                fos.write(decoded);
+            }
+            return tempFile;
         } catch (Exception e) {
-            Log.e("SocialShare", "❌ Error saving base64 data to temp file: " + e.getMessage());
+            Log.e(TAG, "Failed to save base64 temp file", e);
             return null;
         }
     }
 
-    // Create video from image and audio (Android implementation)
-    private void createVideoFromImageAndAudio(File imageFile, File audioFile, String backgroundColor,
-            Double startTime, Boolean saveToDevice, PluginCall call) {
-        Log.d("SocialShare", "📱 Starting video creation from image + audio");
-        Log.d("SocialShare", "   - Image file: " + imageFile.getAbsolutePath());
-        Log.d("SocialShare", "   - Audio file: " + audioFile.getAbsolutePath());
-        Log.d("SocialShare", "   - Background color: " + backgroundColor);
-        Log.d("SocialShare", "   - Start time: " + startTime);
-
-        // For Android, we'll use a simplified approach:
-        // Create a video file by combining the image and audio using
-        // MediaMetadataRetriever and MediaMuxer
-        // This is a complex operation, so for now we'll use a placeholder
-        // implementation
-        // that creates a simple video file and then shares it
-
-        try {
-            // Create output file
-            File outputDir = new File(getContext().getCacheDir(), "videos");
-            if (!outputDir.exists()) {
-                outputDir.mkdirs();
-            }
-
-            String outputFileName = "instagram_video_" + System.currentTimeMillis() + ".mp4";
-            File outputFile = new File(outputDir, outputFileName);
-
-            Log.d("SocialShare", "📱 Video output path: " + outputFile.getAbsolutePath());
-
-            // For now, we'll create a simple video by copying the audio file
-            // In a full implementation, you would use MediaMuxer to combine image and audio
-            // This is a simplified version that at least gets the audio file ready
-
-            // Copy audio file to output location with mp4 extension
-            FileInputStream fis = new FileInputStream(audioFile);
-            FileOutputStream fos = new FileOutputStream(outputFile);
-
-            byte[] buffer = new byte[1024];
-            int length;
-            while ((length = fis.read(buffer)) > 0) {
-                fos.write(buffer, 0, length);
-            }
-
-            fis.close();
-            fos.close();
-
-            Log.d("SocialShare", "✅ Video creation completed (simplified): " + outputFile.getAbsolutePath());
-
-            // Now share the video
-            if (saveToDevice) {
-                Log.d("SocialShare", "📱 Saving video to Gallery and opening Instagram");
-                saveVideoToGalleryAndShare(outputFile, call, "instagram");
-            } else {
-                Log.d("SocialShare", "📱 Sharing video directly to Instagram");
-                shareVideoToInstagramDirectly(outputFile, call);
-            }
-
-        } catch (Exception e) {
-            Log.e("SocialShare", "❌ Error creating video from image and audio: " + e.getMessage());
-            call.reject("Failed to create video from image and audio: " + e.getMessage());
+    private JSONArray toJsonArray(JSArray array) {
+        if (array == null) {
+            return null;
         }
-    }
-
-    // Share video directly to Instagram
-    private void shareVideoToInstagramDirectly(File videoFile, PluginCall call) {
-        Log.d("SocialShare", "📱 Preparing direct Instagram video sharing");
-        Log.d("SocialShare", "   - Video file: " + videoFile.getAbsolutePath());
-
-        Uri videoUri = Uri.fromFile(videoFile);
-        Log.d("SocialShare", "   - Video URI: " + videoUri.toString());
-
-        Intent shareIntent = new Intent(Intent.ACTION_SEND);
-        shareIntent.setType("video/*");
-        shareIntent.putExtra(Intent.EXTRA_STREAM, videoUri);
-        shareIntent.setPackage("com.instagram.android");
-
-        Log.d("SocialShare", "📱 Granting URI permission to Instagram");
-        grantUriPermission(
-                "com.instagram.android",
-                videoUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-        if (shareIntent.resolveActivity(getContext().getPackageManager()) != null) {
-            Log.d("SocialShare", "✅ Opening Instagram with native sharing interface for video");
-            getContext().startActivity(shareIntent);
-            call.resolve(new JSObject().put("status", "shared")
-                    .put("method", "instagram_intent")
-                    .put("note", "Instagram sharing interface opened with native picker for video"));
-        } else {
-            Log.e("SocialShare", "❌ Instagram is not installed");
-            call.reject("Instagram is not installed.");
+        try {
+            return new JSONArray(array.toString());
+        } catch (Exception e) {
+            return null;
         }
     }
 }

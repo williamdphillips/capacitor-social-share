@@ -1,5 +1,6 @@
 package com.soundsstudios.socialshare;
 
+import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.net.Uri;
@@ -31,7 +32,6 @@ import java.io.OutputStream;
 @CapacitorPlugin(name = "SocialShare")
 public class SocialShare extends Plugin {
     private static final String TAG = "SocialShare";
-    private static final String INSTAGRAM_PACKAGE = "com.instagram.android";
 
     @PluginMethod
     public void share(PluginCall call) {
@@ -106,34 +106,23 @@ public class SocialShare extends Plugin {
                     timeBasedTextOverlays,
                     (success, outputFile, error) -> new Handler(Looper.getMainLooper()).post(() -> {
                         if (!success || outputFile == null) {
-                            call.reject(error != null ? error : "Failed to create Instagram video");
+                            call.reject(error != null ? error : "Failed to create share video");
                             return;
                         }
-                        if (saveToDevice) {
-                            saveVideoToGalleryAndOpenInstagram(outputFile, call);
-                        } else {
-                            shareVideoToInstagram(outputFile, call);
-                        }
+                        // Match iOS: present system share sheet (user picks Instagram or any app).
+                        presentShareSheetWithVideo(outputFile, saveToDevice, call);
                     })
             );
             return;
         }
 
         if (videoFile != null) {
-            if (saveToDevice) {
-                saveVideoToGalleryAndOpenInstagram(videoFile, call);
-            } else {
-                shareVideoToInstagram(videoFile, call);
-            }
+            presentShareSheetWithVideo(videoFile, saveToDevice, call);
             return;
         }
 
         if (imageFile != null) {
-            if (saveToDevice) {
-                saveImageToGalleryAndOpenInstagram(imageFile, call);
-            } else {
-                shareImageToInstagram(imageFile, call);
-            }
+            presentShareSheetWithMedia(imageFile, "image/*", saveToDevice, call);
             return;
         }
 
@@ -143,16 +132,11 @@ public class SocialShare extends Plugin {
     private void shareToInstagramStories(PluginCall call) {
         String imagePath = call.getString("imagePath");
         String videoPath = call.getString("videoPath");
-        String contentURL = call.getString("contentURL");
         boolean saveToDevice = Boolean.TRUE.equals(call.getBoolean("saveToDevice", true));
 
         File videoFile = ShareUtils.resolveLocalFile(videoPath);
         if (videoFile != null) {
-            if (saveToDevice) {
-                saveVideoToGalleryAndOpenInstagram(videoFile, call);
-            } else {
-                shareToInstagramStoriesIntent(videoFile, "video/*", contentURL, call);
-            }
+            presentShareSheetWithVideo(videoFile, saveToDevice, call);
             return;
         }
 
@@ -161,115 +145,83 @@ public class SocialShare extends Plugin {
             call.reject("Invalid imagePath/videoPath for Instagram Stories");
             return;
         }
+        presentShareSheetWithMedia(imageFile, "image/*", saveToDevice, call);
+    }
+
+    /**
+     * Present the system share sheet with a video (same UX as iOS UIActivityViewController).
+     * Optionally saves a copy to the gallery in the background when saveToDevice is true.
+     */
+    private void presentShareSheetWithVideo(File videoFile, boolean saveToDevice, PluginCall call) {
+        presentShareSheetWithMedia(videoFile, "video/*", saveToDevice, call);
+    }
+
+    private void presentShareSheetWithMedia(File mediaFile, String mimeType, boolean saveToDevice, PluginCall call) {
+        if (mediaFile == null || !mediaFile.exists()) {
+            call.reject("Media file not found for sharing");
+            return;
+        }
+
         if (saveToDevice) {
-            saveImageToGalleryAndOpenInstagram(imageFile, call);
-        } else {
-            shareToInstagramStoriesIntent(imageFile, "image/*", contentURL, call);
+            // Non-blocking gallery save (mirrors iOS Photos background save).
+            new Thread(() -> {
+                try {
+                    if (mimeType.startsWith("video")) {
+                        saveVideoToGallery(mediaFile);
+                    } else {
+                        saveImageToGallery(mediaFile);
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Background gallery save failed: " + e.getMessage());
+                }
+            }, "social-share-gallery").start();
         }
-    }
 
-    private void shareToInstagramStoriesIntent(File file, String mime, String contentURL, PluginCall call) {
-        Uri uri = getShareableUri(file);
-        Intent intent = new Intent("com.instagram.share.ADD_TO_STORY");
-        intent.setType(mime);
-        intent.putExtra("interactive_asset_uri", uri);
-        if (contentURL != null && !contentURL.isEmpty()) {
-            intent.putExtra("content_url", contentURL);
-        }
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        getContext().grantUriPermission(INSTAGRAM_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
-            getActivity().startActivity(intent);
-            call.resolve(new JSObject().put("status", "shared").put("method", "instagram_stories"));
-        } else {
-            call.reject("Instagram Stories is not available");
-        }
-    }
-
-    private void shareImageToInstagram(File imageFile, PluginCall call) {
-        Uri uri = getShareableUri(imageFile);
+        Uri uri = getShareableUri(mediaFile);
         Intent intent = new Intent(Intent.ACTION_SEND);
-        intent.setType("image/*");
+        intent.setType(mimeType);
         intent.putExtra(Intent.EXTRA_STREAM, uri);
-        intent.setPackage(INSTAGRAM_PACKAGE);
+        intent.setClipData(ClipData.newUri(getContext().getContentResolver(), "shared_media", uri));
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        getContext().grantUriPermission(INSTAGRAM_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
-            getActivity().startActivity(intent);
-            call.resolve(new JSObject().put("status", "shared").put("method", "instagram_intent"));
-        } else {
-            call.reject("Instagram is not installed");
-        }
-    }
 
-    private void shareVideoToInstagram(File videoFile, PluginCall call) {
-        Uri uri = getShareableUri(videoFile);
-        Intent intent = new Intent(Intent.ACTION_SEND);
-        intent.setType("video/*");
-        intent.putExtra(Intent.EXTRA_STREAM, uri);
-        intent.setPackage(INSTAGRAM_PACKAGE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        getContext().grantUriPermission(INSTAGRAM_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
-            getActivity().startActivity(intent);
-            call.resolve(new JSObject().put("status", "shared").put("method", "instagram_intent"));
-        } else {
-            call.reject("Instagram is not installed");
-        }
-    }
-
-    private void saveImageToGalleryAndOpenInstagram(File imageFile, PluginCall call) {
+        Intent chooser = Intent.createChooser(intent, "Share");
         try {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, imageFile.getName());
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
-            }
-            Uri uri = getContext().getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                call.reject("Failed to save image to gallery");
-                return;
-            }
-            copyFileToUri(imageFile, uri);
-            new Handler(Looper.getMainLooper()).postDelayed(() -> openInstagramApp(call), 500);
-        } catch (IOException e) {
-            call.reject("Error saving image: " + e.getMessage());
-        }
-    }
-
-    private void saveVideoToGalleryAndOpenInstagram(File videoFile, PluginCall call) {
-        try {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Video.Media.DISPLAY_NAME, videoFile.getName());
-            values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES);
-            }
-            Uri uri = getContext().getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                call.reject("Failed to save video to gallery");
-                return;
-            }
-            copyFileToUri(videoFile, uri);
-            new Handler(Looper.getMainLooper()).postDelayed(() -> openInstagramApp(call), 1000);
-        } catch (IOException e) {
-            call.reject("Error saving video: " + e.getMessage());
-        }
-    }
-
-    private void openInstagramApp(PluginCall call) {
-        Intent launch = getContext().getPackageManager().getLaunchIntentForPackage(INSTAGRAM_PACKAGE);
-        if (launch != null) {
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            getContext().startActivity(launch);
+            getActivity().startActivity(chooser);
             call.resolve(new JSObject()
                     .put("status", "shared")
-                    .put("method", "instagram_app_open")
-                    .put("note", "Content saved to gallery — open Instagram and select it to share."));
-        } else {
-            call.reject("Instagram is not installed");
+                    .put("method", "system_share_sheet")
+                    .put("note", "System share sheet opened"));
+        } catch (Exception e) {
+            call.reject("Failed to open share sheet: " + e.getMessage());
         }
+    }
+
+    private void saveImageToGallery(File imageFile) throws IOException {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, imageFile.getName());
+        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
+        }
+        Uri uri = getContext().getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        if (uri == null) {
+            throw new IOException("Failed to create gallery image URI");
+        }
+        copyFileToUri(imageFile, uri);
+    }
+
+    private void saveVideoToGallery(File videoFile) throws IOException {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Video.Media.DISPLAY_NAME, videoFile.getName());
+        values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES);
+        }
+        Uri uri = getContext().getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+        if (uri == null) {
+            throw new IOException("Failed to create gallery video URI");
+        }
+        copyFileToUri(videoFile, uri);
     }
 
     private void shareToFacebook(PluginCall call) {

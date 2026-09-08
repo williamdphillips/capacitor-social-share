@@ -192,7 +192,9 @@ public class SocialShare extends Plugin {
             return;
         }
 
-        maybeSaveToGallery(mediaFile, mimeType, saveToDevice);
+        // Do not auto-save to gallery. Stories/share sheet receive a content:// Uri
+        // directly (same as iOS share-sheet flow). saveToDevice used to dump every
+        // share into MediaStore and clutter Photos/Movies.
 
         Uri uri = getShareableUri(mediaFile);
         Intent storiesIntent = buildInstagramStoriesIntent(uri, mimeType, contentURL);
@@ -242,7 +244,6 @@ public class SocialShare extends Plugin {
             call.reject("Media file not found for sharing");
             return;
         }
-        maybeSaveToGallery(mediaFile, mimeType, saveToDevice);
         Uri uri = getShareableUri(mediaFile);
         Intent storiesIntent = buildInstagramStoriesIntent(uri, mimeType, contentURL);
         if (storiesIntent == null
@@ -262,6 +263,8 @@ public class SocialShare extends Plugin {
     }
 
     private void maybeSaveToGallery(File mediaFile, String mimeType, boolean saveToDevice) {
+        // Intentionally unused for Instagram Stories/share-sheet flow.
+        // Kept for potential future explicit "Save to device" actions.
         if (!saveToDevice) {
             return;
         }

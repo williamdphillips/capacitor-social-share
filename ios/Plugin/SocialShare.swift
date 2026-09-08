@@ -752,23 +752,11 @@ public class SocialShare: CAPPlugin {
         }
     }
 
-    // Save video to Photos (optional) and always present share sheet so user can pick Instagram etc.
-    // We never use instagram://library?AssetPath= for video – Instagram can't read app sandbox and shows wrong video.
+    // Present share sheet so user can pick Instagram Story/Post/etc.
+    // Do not auto-save to Photos — sharing uses a file Uri via the share sheet.
     private func saveVideoToPhotosAndOpenInstagram(videoURL: URL, call: CAPPluginCall) {
         print("🔥 [SocialShare] SHARE SHEET PATH: Presenting share sheet with video (path: \(videoURL.path))")
-
-        // Present share sheet immediately so it always appears; user picks Instagram or other app.
         presentShareSheetWithVideo(videoURL: videoURL, call: call)
-
-        // Save to Photos in background so video is in the library (non-blocking).
-        PHPhotoLibrary.requestAuthorization { status in
-            guard status == .authorized || status == .limited else { return }
-            PHPhotoLibrary.shared().performChanges({
-                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
-            }) { success, _ in
-                if success { print("✅ [SocialShare] Video saved to Photos") }
-            }
-        }
     }
 
     // Present share sheet with video - bypasses instagram://library sandbox limitation.

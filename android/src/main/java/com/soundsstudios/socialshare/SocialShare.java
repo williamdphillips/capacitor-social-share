@@ -1,5 +1,6 @@
 package com.soundsstudios.socialshare;
 
+import android.app.Activity;
 import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Intent;

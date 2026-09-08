@@ -2,6 +2,45 @@ import AVFoundation
 import Capacitor
 import Photos
 import UIKit
+import UniformTypeIdentifiers
+
+/// Provides an mp4 to UIActivityViewController as a movie (not a generic document).
+private final class TikTokVideoActivityItemSource: NSObject, UIActivityItemSource {
+    private let videoURL: URL
+
+    init(videoURL: URL) {
+        self.videoURL = videoURL
+        super.init()
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        videoURL
+    }
+
+    func activityViewController(
+        _ activityViewController: UIActivityViewController,
+        itemForActivityType activityType: UIActivity.ActivityType?
+    ) -> Any? {
+        videoURL
+    }
+
+    func activityViewController(
+        _ activityViewController: UIActivityViewController,
+        dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?
+    ) -> String {
+        if #available(iOS 14.0, *) {
+            return UTType.mpeg4Movie.identifier
+        }
+        return "public.mpeg-4"
+    }
+
+    func activityViewController(
+        _ activityViewController: UIActivityViewController,
+        subjectForActivityType activityType: UIActivity.ActivityType?
+    ) -> String {
+        "Wave"
+    }
+}
 
 @objc(SocialShare)
 public class SocialShare: CAPPlugin {
@@ -1136,28 +1175,20 @@ public class SocialShare: CAPPlugin {
         }
     }
 
-    // TikTok sharing - compose image+audio into a video, then open the share sheet / TikTok
+    // TikTok sharing - compose image+audio into a video, then share VIDEO ONLY.
+    // Mixing a link/text with the file makes iOS show "1 Link and 1 Document" and hides TikTok.
     private func shareToTikTok(call: CAPPluginCall) {
-        let text = call.getString("text") ?? ""
-        let hashtags = call.getArray("hashtags") as? [String] ?? []
         let videoPath = call.getString("videoPath")
         let videoData = call.getString("videoData")
         let imagePath = call.getString("imagePath")
         let imageData = call.getString("imageData")
         let audioPath = call.getString("audioPath")
         let audioData = call.getString("audioData")
-        let contentURL = call.getString("contentURL") ?? ""
         let startTime = call.getDouble("startTime") ?? 0.0
         let duration = call.getDouble("duration")
         let textOverlays = call.getArray("textOverlays", [String: Any].self)
         let imageOverlays = call.getArray("imageOverlays", [String: Any].self)
         let timeBasedTextOverlays = call.getArray("timeBasedTextOverlays", [String: Any].self)
-
-        var caption = text
-        if !hashtags.isEmpty {
-            caption +=
-                (caption.isEmpty ? "" : " ") + hashtags.map { "#\($0)" }.joined(separator: " ")
-        }
 
         let imageURL = getFileURL(from: imagePath, orData: imageData, withExtension: "jpg")
         let videoURL = getFileURL(from: videoPath, orData: videoData, withExtension: "mp4")
@@ -1189,12 +1220,7 @@ public class SocialShare: CAPPlugin {
                 timeBasedTextOverlays: timeBasedTextOverlays
             ) { success, composedVideoURL in
                 if success, let composedVideoURL = composedVideoURL {
-                    self.shareWithNativeSheet(
-                        text: caption,
-                        url: contentURL,
-                        imagePath: composedVideoURL.absoluteString,
-                        call: call
-                    )
+                    self.presentTikTokVideoShareSheet(videoURL: composedVideoURL, call: call)
                 } else {
                     call.reject("Failed to create TikTok share video")
                 }
@@ -1203,19 +1229,15 @@ public class SocialShare: CAPPlugin {
         }
 
         if let videoURL = videoURL, FileManager.default.fileExists(atPath: videoURL.path) {
-            shareWithNativeSheet(
-                text: caption,
-                url: contentURL,
-                imagePath: videoURL.absoluteString,
-                call: call
-            )
+            presentTikTokVideoShareSheet(videoURL: videoURL, call: call)
             return
         }
 
+        // Image-only is a last resort; TikTok share extensions prefer video
         if let imageURL = imageURL, FileManager.default.fileExists(atPath: imageURL.path) {
             shareWithNativeSheet(
-                text: caption,
-                url: contentURL,
+                text: "",
+                url: "",
                 imagePath: imageURL.absoluteString,
                 call: call
             )
@@ -1223,6 +1245,73 @@ public class SocialShare: CAPPlugin {
         }
 
         call.reject("TikTok sharing requires videoPath/imagePath, or imagePath + audioPath")
+    }
+
+    /// Present a share sheet with only the video file typed as mpeg-4 movie.
+    private func presentTikTokVideoShareSheet(videoURL: URL, call: CAPPluginCall) {
+        let shareURL = copyVideoToShareableTemp(videoURL: videoURL) ?? videoURL
+        let itemSource = TikTokVideoActivityItemSource(videoURL: shareURL)
+
+        DispatchQueue.main.async {
+            var presenter: UIViewController?
+            if let bridgeVC = self.bridge?.viewController {
+                presenter = bridgeVC
+                while let presented = presenter?.presentedViewController { presenter = presented }
+            }
+            if presenter == nil {
+                presenter = self.topViewControllerForShareSheet()
+            }
+            guard let presenter = presenter else {
+                call.reject("No view controller available to present share sheet")
+                return
+            }
+
+            let activityVC = UIActivityViewController(
+                activityItems: [itemSource],
+                applicationActivities: nil
+            )
+            if let popover = activityVC.popoverPresentationController {
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(
+                    x: presenter.view.bounds.midX,
+                    y: presenter.view.bounds.midY,
+                    width: 0,
+                    height: 0
+                )
+                popover.permittedArrowDirections = []
+            }
+            activityVC.completionWithItemsHandler = { activityType, completed, _, error in
+                if let error = error {
+                    call.reject("Share failed: \(error.localizedDescription)")
+                } else if completed {
+                    call.resolve([
+                        "status": "shared",
+                        "method": "tiktok_video_sheet",
+                        "activityType": activityType?.rawValue ?? "unknown",
+                    ])
+                } else {
+                    call.resolve(["status": "cancelled", "method": "tiktok_video_sheet"])
+                }
+            }
+            presenter.present(activityVC, animated: true, completion: nil)
+        }
+    }
+
+    private func copyVideoToShareableTemp(videoURL: URL) -> URL? {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tiktok_share", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            let dest = tempDir.appendingPathComponent("wave_\(Int(Date().timeIntervalSince1970)).mp4")
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: videoURL, to: dest)
+            return dest
+        } catch {
+            print("⚠️ [SocialShare] TikTok temp copy failed: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     // WhatsApp sharing

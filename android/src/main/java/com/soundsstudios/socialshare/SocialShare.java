@@ -34,6 +34,8 @@ public class SocialShare extends Plugin {
     private static final String TAG = "SocialShare";
     private static final String INSTAGRAM_PACKAGE = "com.instagram.android";
     private static final String ACTION_ADD_TO_STORY = "com.instagram.share.ADD_TO_STORY";
+    /** Instagram Stories background videos are limited to 20 seconds per Meta docs. */
+    private static final double INSTAGRAM_STORIES_MAX_DURATION_SEC = 20.0;
 
     private String facebookAppId = "";
 
@@ -108,6 +110,14 @@ public class SocialShare extends Plugin {
 
         String contentURL = call.getString("contentURL", "");
 
+        // Instagram Stories background videos max out at 20s (Meta docs).
+        Double storyDuration = duration;
+        if (storyDuration == null || storyDuration <= 0) {
+            storyDuration = INSTAGRAM_STORIES_MAX_DURATION_SEC;
+        } else {
+            storyDuration = Math.min(storyDuration, INSTAGRAM_STORIES_MAX_DURATION_SEC);
+        }
+
         // Image + audio → compose story video (primary Wave path)
         if (imageFile != null && audioFile != null) {
             ShareUtils.createVideoFromImageAndAudioAsync(
@@ -115,7 +125,7 @@ public class SocialShare extends Plugin {
                     imageFile,
                     audioFile,
                     startTime,
-                    duration,
+                    storyDuration,
                     textOverlays,
                     imageOverlays,
                     timeBasedTextOverlays,
@@ -124,7 +134,6 @@ public class SocialShare extends Plugin {
                             call.reject(error != null ? error : "Failed to create share video");
                             return;
                         }
-                        // Match iOS: let user pick Instagram Story vs other apps.
                         presentInstagramShareOptions(outputFile, "video/mp4", saveToDevice, contentURL, call);
                     })
             );
@@ -137,7 +146,8 @@ public class SocialShare extends Plugin {
         }
 
         if (imageFile != null) {
-            presentInstagramShareOptions(imageFile, "image/jpeg", saveToDevice, contentURL, call);
+            String imageMime = mimeTypeForFile(imageFile, "image/jpeg");
+            presentInstagramShareOptions(imageFile, imageMime, saveToDevice, contentURL, call);
             return;
         }
 
@@ -303,37 +313,88 @@ public class SocialShare extends Plugin {
         }
     }
 
+    /**
+     * Build Instagram Stories intent per Meta docs:
+     * https://developers.facebook.com/documentation/instagram-platform/sharing-to-stories
+     *
+     * Requires: ADD_TO_STORY action, Facebook App ID (source_application),
+     * and a content:// Uri to a local background image/video.
+     */
     private Intent buildInstagramStoriesIntent(Uri mediaUri, String mimeType, String contentURL) {
+        if (mediaUri == null) {
+            return null;
+        }
+        // Meta requires a content Uri (FileProvider), not file://
+        if (!"content".equalsIgnoreCase(mediaUri.getScheme())) {
+            Log.e(TAG, "Instagram Stories requires a content:// Uri, got: " + mediaUri);
+            return null;
+        }
+
+        String appId = resolveFacebookAppId();
+        if (appId.isEmpty()) {
+            Log.e(TAG, "Instagram Stories requires Facebook App ID (source_application)");
+            return null;
+        }
+
         Intent intent = new Intent(ACTION_ADD_TO_STORY);
         intent.setDataAndType(mediaUri, mimeType);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        intent.setClipData(ClipData.newUri(getContext().getContentResolver(), "instagram_story", mediaUri));
-
-        String appId = facebookAppId;
-        if (appId == null || appId.isEmpty()) {
-            try {
-                int resId = getContext().getResources().getIdentifier(
-                        "facebook_app_id", "string", getContext().getPackageName());
-                if (resId != 0) {
-                    appId = getContext().getString(resId);
-                }
-            } catch (Exception ignored) {
-                appId = "";
-            }
-        }
-        if (appId != null && !appId.isEmpty()) {
-            intent.putExtra("source_application", appId);
-        }
+        intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.putExtra("source_application", appId);
+        intent.setPackage(INSTAGRAM_PACKAGE);
 
         if (contentURL != null && !contentURL.isEmpty()) {
             intent.putExtra("content_url", contentURL);
         }
 
-        getContext().grantUriPermission(
-                INSTAGRAM_PACKAGE,
-                mediaUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        Activity activity = getActivity();
+        if (activity != null) {
+            activity.grantUriPermission(
+                    INSTAGRAM_PACKAGE,
+                    mediaUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } else {
+            getContext().grantUriPermission(
+                    INSTAGRAM_PACKAGE,
+                    mediaUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
         return intent;
+    }
+
+    private String resolveFacebookAppId() {
+        if (facebookAppId != null && !facebookAppId.isEmpty()) {
+            return facebookAppId;
+        }
+        try {
+            int resId = getContext().getResources().getIdentifier(
+                    "facebook_app_id", "string", getContext().getPackageName());
+            if (resId != 0) {
+                String fromResources = getContext().getString(resId);
+                if (fromResources != null) {
+                    return fromResources;
+                }
+            }
+        } catch (Exception ignored) {
+            // fall through
+        }
+        return "";
+    }
+
+    private static String mimeTypeForFile(File file, String fallback) {
+        String name = file.getName().toLowerCase();
+        if (name.endsWith(".png")) {
+            return "image/png";
+        }
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+            return "image/jpeg";
+        }
+        if (name.endsWith(".mp4") || name.endsWith(".mov")) {
+            return "video/mp4";
+        }
+        if (name.endsWith(".webm")) {
+            return "video/webm";
+        }
+        return fallback;
     }
 
     private void saveImageToGallery(File imageFile) throws IOException {

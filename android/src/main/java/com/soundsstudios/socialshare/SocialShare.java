@@ -90,7 +90,6 @@ public class SocialShare extends Plugin {
 
     private void shareToInstagram(PluginCall call) {
         Log.d(TAG, "Starting Instagram sharing");
-        boolean saveToDevice = Boolean.TRUE.equals(call.getBoolean("saveToDevice", false));
         String imagePath = call.getString("imagePath");
         String imageData = call.getString("imageData");
         String videoPath = call.getString("videoPath");
@@ -111,22 +110,14 @@ public class SocialShare extends Plugin {
 
         String contentURL = call.getString("contentURL", "");
 
-        // Instagram Stories background videos max out at 20s (Meta docs).
-        Double storyDuration = duration;
-        if (storyDuration == null || storyDuration <= 0) {
-            storyDuration = INSTAGRAM_STORIES_MAX_DURATION_SEC;
-        } else {
-            storyDuration = Math.min(storyDuration, INSTAGRAM_STORIES_MAX_DURATION_SEC);
-        }
-
-        // Image + audio → compose story video (primary Wave path)
+        // Image + audio → compose video, then hand off to Instagram (Post picker)
         if (imageFile != null && audioFile != null) {
             ShareUtils.createVideoFromImageAndAudioAsync(
                     getContext(),
                     imageFile,
                     audioFile,
                     startTime,
-                    storyDuration,
+                    duration,
                     textOverlays,
                     imageOverlays,
                     timeBasedTextOverlays,
@@ -135,20 +126,20 @@ public class SocialShare extends Plugin {
                             call.reject(error != null ? error : "Failed to create share video");
                             return;
                         }
-                        presentInstagramShareOptions(outputFile, "video/mp4", saveToDevice, contentURL, call);
+                        shareViaInstagramPost(outputFile, "video/mp4", contentURL, call);
                     })
             );
             return;
         }
 
         if (videoFile != null) {
-            presentInstagramShareOptions(videoFile, "video/mp4", saveToDevice, contentURL, call);
+            shareViaInstagramPost(videoFile, "video/mp4", contentURL, call);
             return;
         }
 
         if (imageFile != null) {
             String imageMime = mimeTypeForFile(imageFile, "image/jpeg");
-            presentInstagramShareOptions(imageFile, imageMime, saveToDevice, contentURL, call);
+            shareViaInstagramPost(imageFile, imageMime, contentURL, call);
             return;
         }
 
@@ -177,14 +168,13 @@ public class SocialShare extends Plugin {
     }
 
     /**
-     * Offer Instagram Story, Instagram Post, or system share sheet.
-     * Story uses Meta's ADD_TO_STORY intent; Post uses ACTION_SEND to Instagram
-     * (Feed / Reels / other Instagram destinations).
+     * Open Instagram via ACTION_SEND so Instagram shows its own destination picker
+     * (Feed / Reels / Story / etc.). Falls back to the system share sheet if Instagram
+     * is not installed.
      */
-    private void presentInstagramShareOptions(
+    private void shareViaInstagramPost(
             File mediaFile,
             String mimeType,
-            boolean saveToDevice,
             String contentURL,
             PluginCall call
     ) {
@@ -193,70 +183,24 @@ public class SocialShare extends Plugin {
             return;
         }
 
-        // Do not auto-save to gallery. Stories/share sheet receive a content:// Uri
-        // directly (same as iOS share-sheet flow).
-
         Uri uri = getShareableUri(mediaFile);
-        Intent storiesIntent = buildInstagramStoriesIntent(uri, mimeType, contentURL);
         Intent postIntent = buildInstagramPostIntent(uri, mimeType, contentURL);
-        boolean canShareStory = storiesIntent != null
-                && storiesIntent.resolveActivity(getContext().getPackageManager()) != null;
-        boolean canSharePost = postIntent != null
-                && postIntent.resolveActivity(getContext().getPackageManager()) != null;
-
-        if (!canShareStory && !canSharePost) {
+        if (postIntent == null
+                || postIntent.resolveActivity(getContext().getPackageManager()) == null) {
             Log.w(TAG, "Instagram unavailable; opening system share sheet");
             presentSystemShareSheet(uri, mimeType, contentURL, false, call);
             return;
         }
 
-        java.util.ArrayList<String> labels = new java.util.ArrayList<>();
-        java.util.ArrayList<Runnable> actions = new java.util.ArrayList<>();
-
-        if (canShareStory) {
-            labels.add("Instagram Story");
-            actions.add(() -> {
-                try {
-                    getActivity().startActivity(storiesIntent);
-                    call.resolve(new JSObject()
-                            .put("status", "shared")
-                            .put("method", "instagram_stories")
-                            .put("note", "Instagram Stories composer opened"));
-                } catch (Exception e) {
-                    call.reject("Failed to open Instagram Stories: " + e.getMessage());
-                }
-            });
+        try {
+            getActivity().startActivity(postIntent);
+            call.resolve(new JSObject()
+                    .put("status", "shared")
+                    .put("method", "instagram_post")
+                    .put("note", "Instagram share opened"));
+        } catch (Exception e) {
+            call.reject("Failed to open Instagram share: " + e.getMessage());
         }
-
-        if (canSharePost) {
-            labels.add("Instagram Post");
-            actions.add(() -> {
-                try {
-                    getActivity().startActivity(postIntent);
-                    call.resolve(new JSObject()
-                            .put("status", "shared")
-                            .put("method", "instagram_post")
-                            .put("note", "Instagram post share opened"));
-                } catch (Exception e) {
-                    call.reject("Failed to open Instagram Post share: " + e.getMessage());
-                }
-            });
-        }
-
-        labels.add("More…");
-        actions.add(() -> presentSystemShareSheet(uri, mimeType, contentURL, false, call));
-
-        new android.app.AlertDialog.Builder(getActivity())
-                .setTitle("Share")
-                .setItems(labels.toArray(new CharSequence[0]), (dialog, which) -> {
-                    if (which >= 0 && which < actions.size()) {
-                        actions.get(which).run();
-                    }
-                })
-                .setOnCancelListener(dialog -> call.resolve(new JSObject()
-                        .put("status", "cancelled")
-                        .put("method", "instagram_share_options")))
-                .show();
     }
 
     private Intent buildInstagramPostIntent(Uri mediaUri, String mimeType, String contentURL) {

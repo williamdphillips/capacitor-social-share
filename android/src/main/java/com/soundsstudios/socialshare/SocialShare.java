@@ -184,6 +184,10 @@ public class SocialShare extends Plugin {
         }
 
         Uri uri = getShareableUri(mediaFile);
+        if (uri == null) {
+            call.reject("Unable to create a shareable URI for Instagram");
+            return;
+        }
         Intent postIntent = buildInstagramPostIntent(uri, mimeType, contentURL);
         if (postIntent == null
                 || postIntent.resolveActivity(getContext().getPackageManager()) == null) {
@@ -243,6 +247,10 @@ public class SocialShare extends Plugin {
             return;
         }
         Uri uri = getShareableUri(mediaFile);
+        if (uri == null) {
+            call.reject("Unable to create a shareable URI for Instagram Stories");
+            return;
+        }
         Intent storiesIntent = buildInstagramStoriesIntent(uri, mimeType, contentURL);
         if (storiesIntent == null
                 || storiesIntent.resolveActivity(getContext().getPackageManager()) == null) {
@@ -435,25 +443,126 @@ public class SocialShare extends Plugin {
         shareTextOrMedia(call, "com.twitter.android", "text/plain");
     }
 
+    private static final String TIKTOK_PACKAGE = "com.zhiliaoapp.musically";
+    private static final String TIKTOK_PACKAGE_TRILL = "com.ss.android.ugc.trill";
+
     private void shareToTikTok(PluginCall call) {
-        File video = resolveFile(call.getString("videoPath"), call.getString("videoData"), "mp4");
-        File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
-        File media = video != null ? video : image;
-        if (media == null) {
-            call.reject("TikTok sharing requires videoPath or imagePath");
+        Log.d(TAG, "Starting TikTok sharing");
+        String imagePath = call.getString("imagePath");
+        String imageData = call.getString("imageData");
+        String videoPath = call.getString("videoPath");
+        String videoData = call.getString("videoData");
+        String audioPath = call.getString("audioPath");
+        String audioData = call.getString("audioData");
+        double startTime = call.getDouble("startTime", 0.0);
+        Double duration = call.getDouble("duration");
+        JSONArray textOverlays = toJsonArray(call.getArray("textOverlays"));
+        JSONArray imageOverlays = toJsonArray(call.getArray("imageOverlays"));
+        JSONArray timeBasedTextOverlays = toJsonArray(call.getArray("timeBasedTextOverlays"));
+
+        File imageFile = resolveFile(imagePath, imageData, "jpg");
+        File videoFile = resolveFile(videoPath, videoData, "mp4");
+        File audioFile = resolveFile(audioPath, audioData, "mp3");
+
+        Log.d(TAG, "TikTok media: image=" + (imageFile != null)
+                + " video=" + (videoFile != null)
+                + " audio=" + (audioFile != null));
+
+        // Image + audio → compose a video first (same as Instagram). Sharing the still
+        // alone makes TikTok open an image post instead of a clip with the song.
+        if (imageFile != null && audioFile != null) {
+            ShareUtils.createVideoFromImageAndAudioAsync(
+                    getContext(),
+                    imageFile,
+                    audioFile,
+                    startTime,
+                    duration,
+                    textOverlays,
+                    imageOverlays,
+                    timeBasedTextOverlays,
+                    (success, outputFile, error) -> new Handler(Looper.getMainLooper()).post(() -> {
+                        if (!success || outputFile == null) {
+                            call.reject(error != null ? error : "Failed to create TikTok share video");
+                            return;
+                        }
+                        shareViaTikTok(outputFile, "video/mp4", call);
+                    })
+            );
             return;
         }
-        Uri uri = getShareableUri(media);
+
+        if (videoFile != null) {
+            shareViaTikTok(videoFile, "video/mp4", call);
+            return;
+        }
+
+        if (imageFile != null) {
+            shareViaTikTok(imageFile, mimeTypeForFile(imageFile, "image/jpeg"), call);
+            return;
+        }
+
+        call.reject("TikTok sharing requires videoPath/imagePath, or imagePath + audioPath");
+    }
+
+    private void shareViaTikTok(File mediaFile, String mimeType, PluginCall call) {
+        if (mediaFile == null || !mediaFile.exists()) {
+            call.reject("Media file not found for TikTok sharing");
+            return;
+        }
+
+        Uri uri = getShareableUri(mediaFile);
+        if (uri == null) {
+            call.reject("Unable to create a shareable URI for TikTok");
+            return;
+        }
+        String packageName = resolveInstalledTikTokPackage();
+        if (packageName == null) {
+            Log.w(TAG, "TikTok unavailable; opening system share sheet");
+            presentSystemShareSheet(uri, mimeType, call.getString("contentURL", ""), false, call);
+            return;
+        }
+
         Intent intent = new Intent(Intent.ACTION_SEND);
-        intent.setType(video != null ? "video/*" : "image/*");
+        intent.setType(mimeType);
         intent.putExtra(Intent.EXTRA_STREAM, uri);
-        intent.setPackage("com.zhiliaoapp.musically");
+        intent.setClipData(ClipData.newUri(getContext().getContentResolver(), "tiktok_share", uri));
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
-            getActivity().startActivity(intent);
-            call.resolve();
+        intent.setPackage(packageName);
+
+        Activity activity = getActivity();
+        if (activity != null) {
+            activity.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } else {
-            shareWithSystemShare(call);
+            getContext().grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+
+        try {
+            getActivity().startActivity(intent);
+            call.resolve(new JSObject()
+                    .put("status", "shared")
+                    .put("method", "tiktok")
+                    .put("note", "TikTok share opened"));
+        } catch (Exception e) {
+            call.reject("Failed to open TikTok share: " + e.getMessage());
+        }
+    }
+
+    private String resolveInstalledTikTokPackage() {
+        if (isPackageInstalled(TIKTOK_PACKAGE)) {
+            return TIKTOK_PACKAGE;
+        }
+        if (isPackageInstalled(TIKTOK_PACKAGE_TRILL)) {
+            return TIKTOK_PACKAGE_TRILL;
+        }
+        return null;
+    }
+
+    private boolean isPackageInstalled(String packageName) {
+        try {
+            getContext().getPackageManager().getPackageInfo(packageName, 0);
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -478,68 +587,132 @@ public class SocialShare extends Plugin {
     }
 
     private void shareTextOrMedia(PluginCall call, String packageName, String defaultType) {
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String shareText = text;
-        if (url != null && !url.isEmpty()) {
-            shareText = shareText.isEmpty() ? url : shareText + " " + url;
-        }
-        File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
-        Intent intent = new Intent(Intent.ACTION_SEND);
-        intent.setPackage(packageName);
-        if (image != null) {
-            Uri uri = getShareableUri(image);
-            intent.setType("image/*");
-            intent.putExtra(Intent.EXTRA_STREAM, uri);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            getContext().grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } else {
-            intent.setType(defaultType);
-        }
-        if (!shareText.isEmpty()) {
-            intent.putExtra(Intent.EXTRA_TEXT, shareText);
-        }
-        if (intent.resolveActivity(getContext().getPackageManager()) != null) {
-            getActivity().startActivity(intent);
-            call.resolve();
-        } else {
-            shareWithSystemShare(call);
+        try {
+            String text = call.getString("text", "");
+            String url = call.getString("url", "");
+            String shareText = text;
+            if (url != null && !url.isEmpty()) {
+                shareText = shareText.isEmpty() ? url : shareText + " " + url;
+            }
+            File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setPackage(packageName);
+            if (image != null) {
+                Uri uri = getShareableUri(image);
+                if (uri == null) {
+                    call.reject("Unable to create a shareable URI for the image");
+                    return;
+                }
+                intent.setType("image/*");
+                intent.putExtra(Intent.EXTRA_STREAM, uri);
+                intent.setClipData(ClipData.newUri(getContext().getContentResolver(), "shared_image", uri));
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                getContext().grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                intent.setType(defaultType);
+            }
+            if (!shareText.isEmpty()) {
+                intent.putExtra(Intent.EXTRA_TEXT, shareText);
+            }
+            if (intent.resolveActivity(getContext().getPackageManager()) != null) {
+                getActivity().startActivity(intent);
+                call.resolve();
+            } else {
+                shareWithSystemShare(call);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "shareTextOrMedia failed for " + packageName, e);
+            call.reject("Sharing failed: " + e.getMessage());
         }
     }
 
     private void shareWithSystemShare(PluginCall call) {
-        String text = call.getString("text", "");
-        String url = call.getString("url", "");
-        String shareText = text;
-        if (url != null && !url.isEmpty()) {
-            shareText = shareText.isEmpty() ? url : shareText + " " + url;
+        try {
+            String text = call.getString("text", "");
+            String url = call.getString("url", "");
+            String shareText = text;
+            if (url != null && !url.isEmpty()) {
+                shareText = shareText.isEmpty() ? url : shareText + " " + url;
+            }
+            File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
+            File video = resolveFile(call.getString("videoPath"), call.getString("videoData"), "mp4");
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            if (video != null) {
+                Uri uri = getShareableUri(video);
+                if (uri == null) {
+                    call.reject("Unable to create a shareable URI for the video");
+                    return;
+                }
+                intent.setType("video/*");
+                intent.putExtra(Intent.EXTRA_STREAM, uri);
+                intent.setClipData(ClipData.newUri(getContext().getContentResolver(), "shared_video", uri));
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else if (image != null) {
+                Uri uri = getShareableUri(image);
+                if (uri == null) {
+                    call.reject("Unable to create a shareable URI for the image");
+                    return;
+                }
+                intent.setType("image/*");
+                intent.putExtra(Intent.EXTRA_STREAM, uri);
+                intent.setClipData(ClipData.newUri(getContext().getContentResolver(), "shared_image", uri));
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                intent.setType("text/plain");
+            }
+            if (!shareText.isEmpty()) {
+                intent.putExtra(Intent.EXTRA_TEXT, shareText);
+            }
+            getActivity().startActivity(Intent.createChooser(intent, "Share"));
+            call.resolve();
+        } catch (Exception e) {
+            Log.e(TAG, "shareWithSystemShare failed", e);
+            call.reject("Sharing failed: " + e.getMessage());
         }
-        File image = resolveFile(call.getString("imagePath"), call.getString("imageData"), "jpg");
-        File video = resolveFile(call.getString("videoPath"), call.getString("videoData"), "mp4");
-        Intent intent = new Intent(Intent.ACTION_SEND);
-        if (video != null) {
-            Uri uri = getShareableUri(video);
-            intent.setType("video/*");
-            intent.putExtra(Intent.EXTRA_STREAM, uri);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } else if (image != null) {
-            Uri uri = getShareableUri(image);
-            intent.setType("image/*");
-            intent.putExtra(Intent.EXTRA_STREAM, uri);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } else {
-            intent.setType("text/plain");
-        }
-        if (!shareText.isEmpty()) {
-            intent.putExtra(Intent.EXTRA_TEXT, shareText);
-        }
-        getActivity().startActivity(Intent.createChooser(intent, "Share"));
-        call.resolve();
     }
 
+    /**
+     * Returns a content:// URI for sharing. If the file is outside configured FileProvider
+     * roots (e.g. app files/songs), copies it into cache first so sharing never crashes.
+     */
     private Uri getShareableUri(File file) {
+        if (file == null || !file.exists()) {
+            return null;
+        }
         String authority = getContext().getPackageName() + ".fileprovider";
-        return FileProvider.getUriForFile(getContext(), authority, file);
+        try {
+            return FileProvider.getUriForFile(getContext(), authority, file);
+        } catch (IllegalArgumentException primary) {
+            Log.w(TAG, "FileProvider rejected path, copying to cache: " + file.getAbsolutePath(), primary);
+            try {
+                File shareDir = new File(getContext().getCacheDir(), "share_exports");
+                if (!shareDir.exists() && !shareDir.mkdirs()) {
+                    Log.e(TAG, "Failed to create share_exports cache dir");
+                    return null;
+                }
+                String name = file.getName();
+                if (name == null || name.isEmpty()) {
+                    name = "share_" + System.currentTimeMillis();
+                }
+                File cached = new File(shareDir, System.currentTimeMillis() + "_" + name);
+                copyFileToFile(file, cached);
+                return FileProvider.getUriForFile(getContext(), authority, cached);
+            } catch (Exception fallback) {
+                Log.e(TAG, "Failed to create shareable URI via cache copy", fallback);
+                return null;
+            }
+        }
+    }
+
+    private void copyFileToFile(File source, File dest) throws IOException {
+        try (FileInputStream in = new FileInputStream(source);
+             FileOutputStream out = new FileOutputStream(dest)) {
+            byte[] buffer = new byte[8192];
+            int length;
+            while ((length = in.read(buffer)) > 0) {
+                out.write(buffer, 0, length);
+            }
+        }
     }
 
     private void copyFileToUri(File file, Uri uri) throws IOException {

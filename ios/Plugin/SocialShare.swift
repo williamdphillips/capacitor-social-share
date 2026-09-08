@@ -1136,14 +1136,22 @@ public class SocialShare: CAPPlugin {
         }
     }
 
-    // TikTok sharing - uses native share sheet since TikTok has no direct sharing API
+    // TikTok sharing - compose image+audio into a video, then open the share sheet / TikTok
     private func shareToTikTok(call: CAPPluginCall) {
         let text = call.getString("text") ?? ""
         let hashtags = call.getArray("hashtags") as? [String] ?? []
         let videoPath = call.getString("videoPath")
+        let videoData = call.getString("videoData")
         let imagePath = call.getString("imagePath")
+        let imageData = call.getString("imageData")
         let audioPath = call.getString("audioPath")
-        let contentURL = call.getString("contentURL")
+        let audioData = call.getString("audioData")
+        let contentURL = call.getString("contentURL") ?? ""
+        let startTime = call.getDouble("startTime") ?? 0.0
+        let duration = call.getDouble("duration")
+        let textOverlays = call.getArray("textOverlays", [String: Any].self)
+        let imageOverlays = call.getArray("imageOverlays", [String: Any].self)
+        let timeBasedTextOverlays = call.getArray("timeBasedTextOverlays", [String: Any].self)
 
         var caption = text
         if !hashtags.isEmpty {
@@ -1151,22 +1159,70 @@ public class SocialShare: CAPPlugin {
                 (caption.isEmpty ? "" : " ") + hashtags.map { "#\($0)" }.joined(separator: " ")
         }
 
-        print("📱 TIKTOK: Sharing with native share sheet")
-        print("📱 TIKTOK: Video path: \(videoPath ?? "none")")
-        print("📱 TIKTOK: Image path: \(imagePath ?? "none")")
-        print("📱 TIKTOK: Caption: \(caption)")
+        let imageURL = getFileURL(from: imagePath, orData: imageData, withExtension: "jpg")
+        let videoURL = getFileURL(from: videoPath, orData: videoData, withExtension: "mp4")
+        let audioURL = getFileURL(from: audioPath, orData: audioData, withExtension: "mp3")
 
-        // TikTok doesn't have a direct sharing API like Instagram
-        // Best approach is to use the native share sheet with the video/image
-        // This allows users to save to Files, share to TikTok (if available), or other apps
-        
-        // Use the native share sheet with video or image
-        shareWithNativeSheet(
-            text: caption,
-            url: contentURL ?? "",
-            imagePath: videoPath ?? imagePath,
-            call: call
-        )
+        print("📱 TIKTOK: video=\(videoURL?.path ?? "none") image=\(imageURL?.path ?? "none") audio=\(audioURL?.path ?? "none")")
+
+        // Image + audio → compose video first so TikTok receives a clip, not a still
+        if let imageURL = imageURL,
+            let audioURL = audioURL,
+            FileManager.default.fileExists(atPath: imageURL.path),
+            FileManager.default.fileExists(atPath: audioURL.path)
+        {
+            let backgroundImage = UIImage(contentsOfFile: imageURL.path)
+            let documentsPath = FileManager.default.urls(
+                for: .documentDirectory, in: .userDomainMask)[0]
+            let outputURL = documentsPath.appendingPathComponent(
+                "tiktok_video_\(Date().timeIntervalSince1970).mp4")
+
+            createVideoFromImageAndAudio(
+                audioURL: audioURL,
+                outputURL: outputURL,
+                startTime: startTime,
+                duration: duration,
+                backgroundColor: backgroundImage == nil ? "#000000" : nil,
+                backgroundImage: backgroundImage,
+                textOverlays: textOverlays,
+                imageOverlays: imageOverlays,
+                timeBasedTextOverlays: timeBasedTextOverlays
+            ) { success, composedVideoURL in
+                if success, let composedVideoURL = composedVideoURL {
+                    self.shareWithNativeSheet(
+                        text: caption,
+                        url: contentURL,
+                        imagePath: composedVideoURL.absoluteString,
+                        call: call
+                    )
+                } else {
+                    call.reject("Failed to create TikTok share video")
+                }
+            }
+            return
+        }
+
+        if let videoURL = videoURL, FileManager.default.fileExists(atPath: videoURL.path) {
+            shareWithNativeSheet(
+                text: caption,
+                url: contentURL,
+                imagePath: videoURL.absoluteString,
+                call: call
+            )
+            return
+        }
+
+        if let imageURL = imageURL, FileManager.default.fileExists(atPath: imageURL.path) {
+            shareWithNativeSheet(
+                text: caption,
+                url: contentURL,
+                imagePath: imageURL.absoluteString,
+                call: call
+            )
+            return
+        }
+
+        call.reject("TikTok sharing requires videoPath/imagePath, or imagePath + audioPath")
     }
 
     // WhatsApp sharing

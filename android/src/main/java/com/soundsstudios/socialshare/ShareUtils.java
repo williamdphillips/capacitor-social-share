@@ -92,7 +92,7 @@ public final class ShareUtils {
                 callback.onComplete(false, null, "Failed to create video cache directory");
                 return;
             }
-            File outputFile = new File(outputDir, "instagram_video_" + System.currentTimeMillis() + ".mp4");
+            File outputFile = new File(outputDir, "share_video_" + System.currentTimeMillis() + ".mp4");
             try {
                 createVideoFromImageAndAudio(
                         imageFile,

@@ -177,8 +177,9 @@ public class SocialShare extends Plugin {
     }
 
     /**
-     * Offer Instagram Story (native Stories composer) vs system share sheet,
-     * so Android does not default Instagram ACTION_SEND to DMs.
+     * Offer Instagram Story, Instagram Post, or system share sheet.
+     * Story uses Meta's ADD_TO_STORY intent; Post uses ACTION_SEND to Instagram
+     * (Feed / Reels / other Instagram destinations).
      */
     private void presentInstagramShareOptions(
             File mediaFile,
@@ -193,44 +194,97 @@ public class SocialShare extends Plugin {
         }
 
         // Do not auto-save to gallery. Stories/share sheet receive a content:// Uri
-        // directly (same as iOS share-sheet flow). saveToDevice used to dump every
-        // share into MediaStore and clutter Photos/Movies.
+        // directly (same as iOS share-sheet flow).
 
         Uri uri = getShareableUri(mediaFile);
         Intent storiesIntent = buildInstagramStoriesIntent(uri, mimeType, contentURL);
+        Intent postIntent = buildInstagramPostIntent(uri, mimeType, contentURL);
         boolean canShareStory = storiesIntent != null
                 && storiesIntent.resolveActivity(getContext().getPackageManager()) != null;
+        boolean canSharePost = postIntent != null
+                && postIntent.resolveActivity(getContext().getPackageManager()) != null;
 
-        if (!canShareStory) {
-            Log.w(TAG, "Instagram Stories unavailable; opening system share sheet");
+        if (!canShareStory && !canSharePost) {
+            Log.w(TAG, "Instagram unavailable; opening system share sheet");
             presentSystemShareSheet(uri, mimeType, contentURL, false, call);
             return;
         }
 
+        java.util.ArrayList<String> labels = new java.util.ArrayList<>();
+        java.util.ArrayList<Runnable> actions = new java.util.ArrayList<>();
+
+        if (canShareStory) {
+            labels.add("Instagram Story");
+            actions.add(() -> {
+                try {
+                    getActivity().startActivity(storiesIntent);
+                    call.resolve(new JSObject()
+                            .put("status", "shared")
+                            .put("method", "instagram_stories")
+                            .put("note", "Instagram Stories composer opened"));
+                } catch (Exception e) {
+                    call.reject("Failed to open Instagram Stories: " + e.getMessage());
+                }
+            });
+        }
+
+        if (canSharePost) {
+            labels.add("Instagram Post");
+            actions.add(() -> {
+                try {
+                    getActivity().startActivity(postIntent);
+                    call.resolve(new JSObject()
+                            .put("status", "shared")
+                            .put("method", "instagram_post")
+                            .put("note", "Instagram post share opened"));
+                } catch (Exception e) {
+                    call.reject("Failed to open Instagram Post share: " + e.getMessage());
+                }
+            });
+        }
+
+        labels.add("More…");
+        actions.add(() -> presentSystemShareSheet(uri, mimeType, contentURL, false, call));
+
         new android.app.AlertDialog.Builder(getActivity())
                 .setTitle("Share")
-                .setItems(new CharSequence[] {
-                        "Instagram Story",
-                        "More…"
-                }, (dialog, which) -> {
-                    if (which == 0) {
-                        try {
-                            getActivity().startActivity(storiesIntent);
-                            call.resolve(new JSObject()
-                                    .put("status", "shared")
-                                    .put("method", "instagram_stories")
-                                    .put("note", "Instagram Stories composer opened"));
-                        } catch (Exception e) {
-                            call.reject("Failed to open Instagram Stories: " + e.getMessage());
-                        }
-                    } else {
-                        presentSystemShareSheet(uri, mimeType, contentURL, false, call);
+                .setItems(labels.toArray(new CharSequence[0]), (dialog, which) -> {
+                    if (which >= 0 && which < actions.size()) {
+                        actions.get(which).run();
                     }
                 })
                 .setOnCancelListener(dialog -> call.resolve(new JSObject()
                         .put("status", "cancelled")
                         .put("method", "instagram_share_options")))
                 .show();
+    }
+
+    private Intent buildInstagramPostIntent(Uri mediaUri, String mimeType, String contentURL) {
+        if (mediaUri == null) {
+            return null;
+        }
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType(mimeType);
+        intent.putExtra(Intent.EXTRA_STREAM, mediaUri);
+        intent.setClipData(ClipData.newUri(getContext().getContentResolver(), "instagram_post", mediaUri));
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.setPackage(INSTAGRAM_PACKAGE);
+        if (contentURL != null && !contentURL.isEmpty()) {
+            intent.putExtra(Intent.EXTRA_TEXT, contentURL);
+        }
+        Activity activity = getActivity();
+        if (activity != null) {
+            activity.grantUriPermission(
+                    INSTAGRAM_PACKAGE,
+                    mediaUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } else {
+            getContext().grantUriPermission(
+                    INSTAGRAM_PACKAGE,
+                    mediaUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+        return intent;
     }
 
     private void shareToInstagramStory(

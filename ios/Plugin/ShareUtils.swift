@@ -31,6 +31,53 @@ extension UIFont {
     }
 }
 
+/// Display size of a video track after applying its preferredTransform (handles phone portrait
+/// clips whose sample buffers are stored landscape with a 90°/270° matrix).
+func orientedVideoDisplaySize(for track: AVAssetTrack) -> CGSize {
+    let preferred = track.preferredTransform
+    let naturalSize = track.naturalSize
+    let orientedRect = CGRect(origin: .zero, size: naturalSize).applying(preferred)
+    return CGSize(width: abs(orientedRect.width), height: abs(orientedRect.height))
+}
+
+/**
+ Builds a layer transform that:
+ 1. Applies the track's preferredTransform (fixes sideways phone videos)
+ 2. Normalizes origin after rotation
+ 3. Scales with cover (max) to fill 9:16 like CSS object-cover in the editor preview
+ 4. Centers in the target render size
+ */
+func storyVideoLayerTransform(for track: AVAssetTrack, targetSize: CGSize) -> CGAffineTransform {
+    let preferred = track.preferredTransform
+    let naturalSize = track.naturalSize
+    let orientedRect = CGRect(origin: .zero, size: naturalSize).applying(preferred)
+    let displaySize = CGSize(width: abs(orientedRect.width), height: abs(orientedRect.height))
+
+    guard displaySize.width > 0, displaySize.height > 0 else {
+        return preferred
+    }
+
+    // preferredTransform first, then shift so the oriented frame sits at (0,0)
+    var transform = preferred.concatenating(
+        CGAffineTransform(translationX: -orientedRect.origin.x, y: -orientedRect.origin.y)
+    )
+
+    // Cover (max) matches the in-app preview's object-cover behavior
+    let scaleX = targetSize.width / displaySize.width
+    let scaleY = targetSize.height / displaySize.height
+    let scale = max(scaleX, scaleY)
+
+    transform = transform.concatenating(CGAffineTransform(scaleX: scale, y: scale))
+
+    let scaledWidth = displaySize.width * scale
+    let scaledHeight = displaySize.height * scale
+    let xOffset = (targetSize.width - scaledWidth) / 2.0
+    let yOffset = (targetSize.height - scaledHeight) / 2.0
+    transform = transform.concatenating(CGAffineTransform(translationX: xOffset, y: yOffset))
+
+    return transform
+}
+
 func createVideoFromImageAndAudio(
     audioURL: URL, outputURL: URL, startTime: Double, duration: Double?, backgroundColor: String?,
     backgroundImage: UIImage?, textOverlays: [[String: Any]]? = nil, imageOverlays: [[String: Any]]? = nil, timeBasedTextOverlays: [[String: Any]]? = nil, completion: @escaping (Bool, URL?) -> Void
@@ -1053,25 +1100,11 @@ func applyOverlaysToVideo(
     instruction.timeRange = CMTimeRange(start: .zero, duration: videoDuration)
     
     let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
-    
-    // Scale video to fit within 1080x1920 while maintaining aspect ratio
-    let naturalSize = videoTrack.naturalSize
-    let scaleX = targetSize.width / naturalSize.width
-    let scaleY = targetSize.height / naturalSize.height
-    let scale = min(scaleX, scaleY) // Use the smaller scale to ensure video fits
-    
-    // Calculate centered position
-    let scaledWidth = naturalSize.width * scale
-    let scaledHeight = naturalSize.height * scale
-    let xOffset = (targetSize.width - scaledWidth) / 2.0
-    let yOffset = (targetSize.height - scaledHeight) / 2.0
-    
-    // Apply transform to scale and center the video
-    layerInstruction.setTransform(
-        CGAffineTransform(scaleX: scale, y: scale)
-            .concatenating(CGAffineTransform(translationX: xOffset, y: yOffset)),
-        at: .zero
-    )
+
+    // Honor preferredTransform (phone portrait metadata) and cover-fill 9:16 like the editor preview
+    let displaySize = orientedVideoDisplaySize(for: videoTrack)
+    let videoTransform = storyVideoLayerTransform(for: videoTrack, targetSize: targetSize)
+    layerInstruction.setTransform(videoTransform, at: .zero)
     
     instruction.layerInstructions = [layerInstruction]
     videoComposition.instructions = [instruction]
@@ -1079,9 +1112,9 @@ func applyOverlaysToVideo(
     // Add overlays if provided
     if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) || (timeBasedTextOverlays != nil && !timeBasedTextOverlays!.isEmpty) {
         print("📱 [Overlays] Creating overlay layers")
-        print("📱 [Overlays] Video natural size: \(naturalSize.width)x\(naturalSize.height)")
+        print("📱 [Overlays] Video natural size: \(videoTrack.naturalSize.width)x\(videoTrack.naturalSize.height)")
+        print("📱 [Overlays] Oriented display size: \(displaySize.width)x\(displaySize.height)")
         print("📱 [Overlays] Target render size: \(targetSize.width)x\(targetSize.height)")
-        print("📱 [Overlays] Video scale: \(scale), offset: (\(xOffset), \(yOffset))")
         
         // Create parent layer for the video - use target size (1080x1920)
         let parentLayer = CALayer()
@@ -1335,25 +1368,11 @@ func replaceVideoAudioAndApplyOverlays(
     instruction.timeRange = CMTimeRange(start: .zero, duration: finalDuration)
     
     let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
-    
-    // Scale video to fit within 1080x1920 while maintaining aspect ratio
-    let naturalSize = videoTrack.naturalSize
-    let scaleX = targetSize.width / naturalSize.width
-    let scaleY = targetSize.height / naturalSize.height
-    let scale = min(scaleX, scaleY) // Use the smaller scale to ensure video fits
-    
-    // Calculate centered position
-    let scaledWidth = naturalSize.width * scale
-    let scaledHeight = naturalSize.height * scale
-    let xOffset = (targetSize.width - scaledWidth) / 2.0
-    let yOffset = (targetSize.height - scaledHeight) / 2.0
-    
-    // Apply transform to scale and center the video
-    layerInstruction.setTransform(
-        CGAffineTransform(scaleX: scale, y: scale)
-            .concatenating(CGAffineTransform(translationX: xOffset, y: yOffset)),
-        at: .zero
-    )
+
+    // Honor preferredTransform (phone portrait metadata) and cover-fill 9:16 like the editor preview
+    let displaySize = orientedVideoDisplaySize(for: videoTrack)
+    let videoTransform = storyVideoLayerTransform(for: videoTrack, targetSize: targetSize)
+    layerInstruction.setTransform(videoTransform, at: .zero)
     
     instruction.layerInstructions = [layerInstruction]
     videoComposition.instructions = [instruction]
@@ -1361,9 +1380,9 @@ func replaceVideoAudioAndApplyOverlays(
     // Add overlays if provided
     if (textOverlays != nil && !textOverlays!.isEmpty) || (imageOverlays != nil && !imageOverlays!.isEmpty) || (timeBasedTextOverlays != nil && !timeBasedTextOverlays!.isEmpty) {
         print("📱 [Audio+Overlays] Creating overlay layers")
-        print("📱 [Audio+Overlays] Video natural size: \(naturalSize.width)x\(naturalSize.height)")
+        print("📱 [Audio+Overlays] Video natural size: \(videoTrack.naturalSize.width)x\(videoTrack.naturalSize.height)")
+        print("📱 [Audio+Overlays] Oriented display size: \(displaySize.width)x\(displaySize.height)")
         print("📱 [Audio+Overlays] Target render size: \(targetSize.width)x\(targetSize.height)")
-        print("📱 [Audio+Overlays] Video scale: \(scale), offset: (\(xOffset), \(yOffset))")
         
         // Create parent layer for the video - use target size (1080x1920)
         let parentLayer = CALayer()
